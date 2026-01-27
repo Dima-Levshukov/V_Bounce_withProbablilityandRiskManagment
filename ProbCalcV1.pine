@@ -1,0 +1,233 @@
+// This Pine Script™ source code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// © ProbCalcV1 - V-Bounce Probability & Risk Management Calculator
+
+//@version=6
+indicator("V-Bounce Probability & Risk Management V1", shorttitle="VB-ProbCalc", overlay=true, max_labels_count=500)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// INPUTS
+// ──────────────────────────────────────────────────────────────────────────────
+
+// V-Bounce Detection Parameters
+lookbackPeriod    = input.int(20,    "Lookback Period",           minval=5,   maxval=100,  group="V-Bounce Detection")
+depthPercent      = input.float(2.0, "V-Depth Threshold (%)",     minval=0.5, maxval=20.0, step=0.1, group="V-Bounce Detection")
+recoveryPercent   = input.float(1.5, "Recovery Threshold (%)",    minval=0.5, maxval=20.0, step=0.1, group="V-Bounce Detection")
+confirmBars       = input.int(3,     "Confirmation Bars",         minval=1,   maxval=10,   group="V-Bounce Detection")
+
+// Probability Calculation Parameters
+historyLength     = input.int(100,   "Historical Sample Size",    minval=20,  maxval=500,  group="Probability Engine")
+minSampleSize     = input.int(10,    "Min Samples for Signal",    minval=5,   maxval=50,   group="Probability Engine")
+probThreshold     = input.float(60.0,"Probability Threshold (%)", minval=50.0,maxval=95.0, step=1.0, group="Probability Engine")
+
+// Risk Management Parameters
+riskPercent       = input.float(1.0, "Risk Per Trade (%)",        minval=0.1, maxval=10.0, step=0.1, group="Risk Management")
+rewardRatio       = input.float(2.0, "Reward:Risk Ratio",         minval=0.5, maxval=10.0, step=0.5, group="Risk Management")
+accountSize       = input.float(10000.0, "Account Size ($)",      minval=100.0, group="Risk Management")
+useATRStop        = input.bool(true, "Use ATR-Based Stop Loss",   group="Risk Management")
+atrMultiplier     = input.float(1.5, "ATR Stop Multiplier",       minval=0.5, maxval=5.0,  step=0.1, group="Risk Management")
+atrLength         = input.int(14,    "ATR Length",                 minval=5,   maxval=50,   group="Risk Management")
+
+// Volume Confirmation
+useVolume         = input.bool(true, "Use Volume Confirmation",   group="Volume Filter")
+volMultiplier     = input.float(1.5, "Volume Spike Multiplier",   minval=1.0, maxval=5.0,  step=0.1, group="Volume Filter")
+volAvgLength      = input.int(20,    "Volume Average Length",      minval=5,   maxval=50,   group="Volume Filter")
+
+// Display Options
+showLabels        = input.bool(true, "Show Signal Labels",        group="Display")
+showStopLevels    = input.bool(true, "Show Stop/Target Levels",   group="Display")
+showInfoTable     = input.bool(true, "Show Info Table",           group="Display")
+tablePosition     = input.string("Top Right", "Table Position",   options=["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group="Display")
+
+// ──────────────────────────────────────────────────────────────────────────────
+// CORE CALCULATIONS
+// ──────────────────────────────────────────────────────────────────────────────
+
+// ATR for volatility-based calculations
+atrValue = ta.atr(atrLength)
+
+// Volume average
+volAvg = ta.sma(volume, volAvgLength)
+isVolumeSpike = not useVolume or (volume > volAvg * volMultiplier)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// V-BOUNCE DETECTION
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Find swing low within lookback
+swingLow       = ta.lowest(low, lookbackPeriod)
+swingHigh      = ta.highest(high, lookbackPeriod)
+
+// Calculate percentage drop from recent high to swing low
+dropFromHigh   = (swingHigh - swingLow) / swingHigh * 100
+
+// Check if price has dropped enough to form the "V" left side
+isDeepEnough   = dropFromHigh >= depthPercent
+
+// Recovery detection: price bouncing from the swing low
+recoveryFromLow = (close - swingLow) / swingLow * 100
+isRecovering    = recoveryFromLow >= recoveryPercent
+
+// Confirm the bounce holds over N bars
+var int confirmCount = 0
+if close > swingLow and isRecovering
+    confirmCount := confirmCount + 1
+else
+    confirmCount := 0
+
+isBounceConfirmed = confirmCount >= confirmBars
+
+// V-Bounce signal: deep enough drop + recovery + confirmation + optional volume
+vBounceRaw = isDeepEnough and isRecovering and isBounceConfirmed and isVolumeSpike
+
+// Prevent duplicate signals on consecutive bars
+var bool prevSignal = false
+vBounceSignal = vBounceRaw and not prevSignal
+prevSignal := vBounceRaw
+
+// ──────────────────────────────────────────────────────────────────────────────
+// PROBABILITY ENGINE
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Track historical V-Bounce outcomes
+var int   totalBounces    = 0
+var int   successBounces  = 0
+var float sumGain         = 0.0
+var float sumLoss         = 0.0
+
+// Track pending signals to evaluate outcome
+var float entryPrice      = na
+var float stopPrice       = na
+var float targetPrice     = na
+var bool  inTrade         = false
+
+// Evaluate previous signal outcome
+if inTrade
+    // Check if target hit
+    if high >= targetPrice
+        successBounces := successBounces + 1
+        sumGain        := sumGain + (targetPrice - entryPrice)
+        inTrade        := false
+        entryPrice     := na
+    // Check if stop hit
+    else if low <= stopPrice
+        sumLoss := sumLoss + (entryPrice - stopPrice)
+        inTrade := false
+        entryPrice := na
+
+// Register new V-Bounce signal
+if vBounceSignal and not inTrade
+    totalBounces := totalBounces + 1
+    entryPrice   := close
+    stopPrice    := useATRStop ? close - (atrValue * atrMultiplier) : swingLow
+    targetPrice  := close + ((close - stopPrice) * rewardRatio)
+    inTrade      := true
+
+// Calculate probability metrics
+winRate        = totalBounces > 0 ? (successBounces / totalBounces) * 100 : 0.0
+avgGain        = successBounces > 0 ? sumGain / successBounces : 0.0
+avgLoss        = (totalBounces - successBounces) > 0 ? sumLoss / (totalBounces - successBounces) : 0.0
+expectancy     = totalBounces > 0 ? ((winRate / 100) * avgGain) - ((1 - winRate / 100) * avgLoss) : 0.0
+profitFactor   = avgLoss > 0 ? (avgGain * successBounces) / (avgLoss * (totalBounces - successBounces)) : 0.0
+
+// Signal quality assessment
+hasSufficientData = totalBounces >= minSampleSize
+isHighProbability = winRate >= probThreshold and hasSufficientData
+
+// ──────────────────────────────────────────────────────────────────────────────
+// RISK MANAGEMENT CALCULATIONS
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Position sizing based on risk
+currentStop     = useATRStop ? close - (atrValue * atrMultiplier) : swingLow
+riskPerShare    = math.abs(close - currentStop)
+riskAmount      = accountSize * (riskPercent / 100)
+positionSize    = riskPerShare > 0 ? math.floor(riskAmount / riskPerShare) : 0
+positionValue   = positionSize * close
+currentTarget   = close + (riskPerShare * rewardRatio)
+
+// Kelly Criterion for optimal position sizing
+kellyPercent = winRate > 0 and avgLoss > 0 ? ((winRate / 100) - ((1 - winRate / 100) / (avgGain / avgLoss))) * 100 : 0.0
+kellyPercent := math.max(0, math.min(kellyPercent, 25)) // Cap at 25%
+
+// ──────────────────────────────────────────────────────────────────────────────
+// VISUAL OUTPUT
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Signal colors based on probability
+signalColor = isHighProbability ? color.new(color.green, 0) : hasSufficientData ? color.new(color.yellow, 0) : color.new(color.gray, 0)
+
+// Plot V-Bounce signals
+plotshape(vBounceSignal and showLabels, title="V-Bounce Signal", location=location.belowbar, style=shape.triangleup, size=size.normal, color=signalColor)
+
+// Stop and Target levels
+plot(inTrade and showStopLevels ? stopPrice : na,   title="Stop Loss",     color=color.new(color.red, 0),   style=plot.style_linebr, linewidth=2)
+plot(inTrade and showStopLevels ? targetPrice : na,  title="Take Profit",   color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
+plot(inTrade and showStopLevels ? entryPrice : na,   title="Entry Price",   color=color.new(color.blue, 0),  style=plot.style_linebr, linewidth=1)
+
+// Background highlight on signal
+bgcolor(vBounceSignal ? color.new(signalColor, 90) : na, title="Signal Background")
+
+// ──────────────────────────────────────────────────────────────────────────────
+// INFORMATION TABLE
+// ──────────────────────────────────────────────────────────────────────────────
+
+if showInfoTable and barstate.islast
+    tablePos = switch tablePosition
+        "Top Left"     => position.top_left
+        "Top Right"    => position.top_right
+        "Bottom Left"  => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        => position.top_right
+
+    var table infoTable = table.new(tablePos, 2, 12, bgcolor=color.new(color.black, 85), border_width=1, border_color=color.gray, frame_width=1, frame_color=color.gray)
+
+    // Header
+    table.cell(infoTable, 0, 0, "V-Bounce ProbCalc V1",    text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60), text_halign=text.align_center)
+    table.cell(infoTable, 1, 0, "",                          bgcolor=color.new(color.blue, 60))
+
+    // Probability Stats
+    table.cell(infoTable, 0, 1, "Total Signals",            text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 1, str.tostring(totalBounces),  text_color=color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 2, "Win Rate",                  text_color=color.white, text_size=size.small)
+    winRateColor = winRate >= probThreshold ? color.green : winRate >= 50 ? color.yellow : color.red
+    table.cell(infoTable, 1, 2, str.tostring(winRate, "#.1") + "%", text_color=winRateColor, text_size=size.small)
+
+    table.cell(infoTable, 0, 3, "Expectancy",               text_color=color.white, text_size=size.small)
+    expColor = expectancy > 0 ? color.green : color.red
+    table.cell(infoTable, 1, 3, str.tostring(expectancy, "#.2"), text_color=expColor, text_size=size.small)
+
+    table.cell(infoTable, 0, 4, "Profit Factor",            text_color=color.white, text_size=size.small)
+    pfColor = profitFactor > 1.5 ? color.green : profitFactor > 1.0 ? color.yellow : color.red
+    table.cell(infoTable, 1, 4, str.tostring(profitFactor, "#.2"), text_color=pfColor, text_size=size.small)
+
+    table.cell(infoTable, 0, 5, "Kelly %",                  text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 5, str.tostring(kellyPercent, "#.1") + "%", text_color=color.white, text_size=size.small)
+
+    // Separator
+    table.cell(infoTable, 0, 6, "── Risk Mgmt ──",          text_color=color.gray,  text_size=size.small)
+    table.cell(infoTable, 1, 6, "",                           text_color=color.gray,  text_size=size.small)
+
+    // Risk Management Info
+    table.cell(infoTable, 0, 7, "Position Size",            text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 7, str.tostring(positionSize) + " shares", text_color=color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 8, "Risk Amount",              text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 8, "$" + str.tostring(riskAmount, "#.2"), text_color=color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 9, "Stop Loss",                text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 9, str.tostring(currentStop, "#.2"), text_color=color.red, text_size=size.small)
+
+    table.cell(infoTable, 0, 10, "Target",                  text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 10, str.tostring(currentTarget, "#.2"), text_color=color.green, text_size=size.small)
+
+    table.cell(infoTable, 0, 11, "R:R Ratio",               text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 11, "1:" + str.tostring(rewardRatio, "#.1"), text_color=color.white, text_size=size.small)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ALERTS
+// ──────────────────────────────────────────────────────────────────────────────
+
+alertcondition(vBounceSignal and isHighProbability, title="High Probability V-Bounce", message="High probability V-Bounce detected! Win rate: {{plot_0}}%")
+alertcondition(vBounceSignal, title="V-Bounce Signal", message="V-Bounce signal detected. Check probability metrics.")
