@@ -1,0 +1,955 @@
+//@version=6
+indicator("Risk Detection System",
+     overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Session Settings
+groupSession = "Session Settings"
+sessionRTH = input.session("0930-1600", "RTH Session (Exchange Time)", group=groupSession)
+
+// Williams Fractals Settings
+groupFractals = "Williams Fractals"
+fractalPeriods = input.int(4, "Fractal Periods", minval=2, maxval=10, group=groupFractals)
+clusterDistance = input.float(5.0, "Cluster Distance (points)", minval=1.0, maxval=20.0, group=groupFractals)
+
+// Volatility Settings
+groupVol = "Volatility Detection"
+volSpikeMultiplier = input.float(2.5, "Volume Spike Multiplier", minval=1.5, maxval=5.0, step=0.1, group=groupVol)
+priceSpikeMultiplier = input.float(2.0, "Price Spike Multiplier (ATR)", minval=1.0, maxval=5.0, step=0.1, group=groupVol)
+volAvgLength = input.int(20, "Volume Average Length", minval=5, maxval=50, group=groupVol)
+atrLengthVol = input.int(14, "ATR Length for Volatility", minval=5, maxval=50, group=groupVol)
+
+// VOLD Regime Settings
+groupVold = "VOLD Regime"
+voldSymbol = input.string("USI:VOLD", "VOLD Symbol", group=groupVold)
+voldLookback = input.int(3, "VOLD Trend Lookback Candles", minval=2, maxval=10, group=groupVold)
+voldConsLookback = input.int(8, "VOLD Consolidation Lookback", minval=4, maxval=20, group=groupVold)
+voldConsThresh = input.float(0.3, "VOLD Consolidation Range %", minval=0.1, maxval=2.0, step=0.1, group=groupVold)
+voldMinConsLen = input.int(4, "VOLD Min Consolidation Length", minval=3, maxval=15, group=groupVold)
+
+// FVG Settings
+groupFVG = "FVG Settings"
+show15mFVG = input.bool(true, "Show 15m FVGs", group=groupFVG)
+show1hFVG = input.bool(true, "Show 1hr FVGs", group=groupFVG)
+fvg15mColor = input.color(color.new(color.blue, 70), "15m FVG Color", group=groupFVG)
+fvg1hColor = input.color(color.new(color.purple, 70), "1hr FVG Color", group=groupFVG)
+fvgFilledColor = input.color(color.new(color.gray, 80), "Filled FVG Color", group=groupFVG)
+fvg15mText = input.string("15m", "15m FVG Label", group=groupFVG)
+fvg1hText = input.string("1hr", "1hr FVG Label", group=groupFVG)
+
+// Probability Thresholds
+groupProb = "Probability Settings"
+resistanceThreshold = input.float(12.25, "Resistance Distance Threshold (points)", minval=5.0, maxval=30.0, group=groupProb)
+resistanceThreshold1h = input.float(20.0, "1hr FVG Distance Threshold (points)", minval=10.0, maxval=50.0, group=groupProb)
+highlightThreshold = input.float(60.0, "Highlight Probability Threshold %", minval=40.0, maxval=90.0, group=groupProb)
+
+// Display Settings
+groupDisplay = "Display"
+showTable = input.bool(true, "Show Probability Table", group=groupDisplay)
+tablePosition = input.string("Top Right", "Table Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=groupDisplay)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TIME HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+chartTfMin = timeframe.in_seconds(timeframe.period) / 60.0
+chartTfMs = timeframe.in_seconds(timeframe.period) * 1000
+sessionLenMin = 390
+
+inSess = not na(time(timeframe.period, sessionRTH))
+newSess = inSess and not inSess[1]
+
+var int barsFromOpen = 0
+barsFromOpen := newSess ? 1 : inSess ? (barsFromOpen + 1) : 0
+minsFromOpen = inSess ? (barsFromOpen - 1) * chartTfMin : na
+
+// Check if we're past the first 30 minutes of the session
+pastFirst30Min = inSess and minsFromOpen >= 30
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WILLIAMS FRACTALS (n=4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+n = fractalPeriods
+
+// UpFractal detection
+bool upflagDownFrontier = true
+bool upflagUpFrontier0 = true
+bool upflagUpFrontier1 = true
+bool upflagUpFrontier2 = true
+bool upflagUpFrontier3 = true
+bool upflagUpFrontier4 = true
+
+for i = 1 to n
+    upflagDownFrontier := upflagDownFrontier and (high[n-i] < high[n])
+    upflagUpFrontier0 := upflagUpFrontier0 and (high[n+i] < high[n])
+    upflagUpFrontier1 := upflagUpFrontier1 and (high[n+1] <= high[n] and high[n+i + 1] < high[n])
+    upflagUpFrontier2 := upflagUpFrontier2 and (high[n+1] <= high[n] and high[n+2] <= high[n] and high[n+i + 2] < high[n])
+    upflagUpFrontier3 := upflagUpFrontier3 and (high[n+1] <= high[n] and high[n+2] <= high[n] and high[n+3] <= high[n] and high[n+i + 3] < high[n])
+    upflagUpFrontier4 := upflagUpFrontier4 and (high[n+1] <= high[n] and high[n+2] <= high[n] and high[n+3] <= high[n] and high[n+4] <= high[n] and high[n+i + 4] < high[n])
+
+flagUpFrontier = upflagUpFrontier0 or upflagUpFrontier1 or upflagUpFrontier2 or upflagUpFrontier3 or upflagUpFrontier4
+upFractal = upflagDownFrontier and flagUpFrontier
+
+// DownFractal detection
+bool downflagDownFrontier = true
+bool downflagUpFrontier0 = true
+bool downflagUpFrontier1 = true
+bool downflagUpFrontier2 = true
+bool downflagUpFrontier3 = true
+bool downflagUpFrontier4 = true
+
+for i = 1 to n
+    downflagDownFrontier := downflagDownFrontier and (low[n-i] > low[n])
+    downflagUpFrontier0 := downflagUpFrontier0 and (low[n+i] > low[n])
+    downflagUpFrontier1 := downflagUpFrontier1 and (low[n+1] >= low[n] and low[n+i + 1] > low[n])
+    downflagUpFrontier2 := downflagUpFrontier2 and (low[n+1] >= low[n] and low[n+2] >= low[n] and low[n+i + 2] > low[n])
+    downflagUpFrontier3 := downflagUpFrontier3 and (low[n+1] >= low[n] and low[n+2] >= low[n] and low[n+3] >= low[n] and low[n+i + 3] > low[n])
+    downflagUpFrontier4 := downflagUpFrontier4 and (low[n+1] >= low[n] and low[n+2] >= low[n] and low[n+3] >= low[n] and low[n+4] >= low[n] and low[n+i + 4] > low[n])
+
+flagDownFrontier = downflagUpFrontier0 or downflagUpFrontier1 or downflagUpFrontier2 or downflagUpFrontier3 or downflagUpFrontier4
+downFractal = downflagDownFrontier and flagDownFrontier
+
+// Store fractal highs and lows with clustering
+var float[] fractalHighs = array.new_float()
+var float[] fractalLows = array.new_float()
+var int[] fractalHighTimes = array.new_int()
+var int[] fractalLowTimes = array.new_int()
+
+// Session tracking for fractals (keep 1 week of data)
+maxFractalAge = 7 * 24 * 60 * 60 * 1000  // 1 week in milliseconds
+
+// Add new fractal highs with clustering
+if upFractal
+    fractalPrice = high[n]
+    fractalTime = time[n]
+
+    // Check if this fractal should be clustered with an existing one
+    bool clustered = false
+    int clusterIdx = -1
+
+    if array.size(fractalHighs) > 0
+        for i = 0 to array.size(fractalHighs) - 1
+            existingPrice = array.get(fractalHighs, i)
+            if math.abs(fractalPrice - existingPrice) <= clusterDistance
+                // Cluster: keep the highest price
+                if fractalPrice > existingPrice
+                    array.set(fractalHighs, i, fractalPrice)
+                    array.set(fractalHighTimes, i, fractalTime)
+                clustered := true
+                break
+
+    if not clustered
+        array.push(fractalHighs, fractalPrice)
+        array.push(fractalHighTimes, fractalTime)
+
+// Add new fractal lows with clustering
+if downFractal
+    fractalPrice = low[n]
+    fractalTime = time[n]
+
+    // Check if this fractal should be clustered with an existing one
+    bool clustered = false
+
+    if array.size(fractalLows) > 0
+        for i = 0 to array.size(fractalLows) - 1
+            existingPrice = array.get(fractalLows, i)
+            if math.abs(fractalPrice - existingPrice) <= clusterDistance
+                // Cluster: keep the lowest price
+                if fractalPrice < existingPrice
+                    array.set(fractalLows, i, fractalPrice)
+                    array.set(fractalLowTimes, i, fractalTime)
+                clustered := true
+                break
+
+    if not clustered
+        array.push(fractalLows, fractalPrice)
+        array.push(fractalLowTimes, fractalTime)
+
+// Clean up old fractals (older than 1 week)
+if array.size(fractalHighs) > 0
+    for i = array.size(fractalHighs) - 1 to 0
+        if time - array.get(fractalHighTimes, i) > maxFractalAge
+            array.remove(fractalHighs, i)
+            array.remove(fractalHighTimes, i)
+
+if array.size(fractalLows) > 0
+    for i = array.size(fractalLows) - 1 to 0
+        if time - array.get(fractalLowTimes, i) > maxFractalAge
+            array.remove(fractalLows, i)
+            array.remove(fractalLowTimes, i)
+
+// Find nearest swing high above price
+f_nearestSwingHigh() =>
+    float nearest = na
+    float minDist = na
+    if array.size(fractalHighs) > 0
+        for i = 0 to array.size(fractalHighs) - 1
+            price = array.get(fractalHighs, i)
+            if price > close
+                dist = price - close
+                if na(minDist) or dist < minDist
+                    minDist := dist
+                    nearest := price
+    nearest
+
+// Find nearest swing low below price
+f_nearestSwingLow() =>
+    float nearest = na
+    float minDist = na
+    if array.size(fractalLows) > 0
+        for i = 0 to array.size(fractalLows) - 1
+            price = array.get(fractalLows, i)
+            if price < close
+                dist = close - price
+                if na(minDist) or dist < minDist
+                    minDist := dist
+                    nearest := price
+    nearest
+
+nearestSwingHigh = f_nearestSwingHigh()
+nearestSwingLow = f_nearestSwingLow()
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VOLATILITY DETECTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Get 5-minute data for volatility calculation
+[vol5, high5, low5, close5, open5] = request.security(syminfo.tickerid, "5", [volume, high, low, close, open], barmerge.gaps_off, barmerge.lookahead_off)
+
+// Calculate averages
+avgVolume = ta.sma(vol5, volAvgLength)
+atrValue = ta.atr(atrLengthVol)
+
+// Price range on current bar
+priceRange = high5 - low5
+
+// Detect volume spike
+isVolumeSpike = vol5 > avgVolume * volSpikeMultiplier
+
+// Detect price spike (large candle relative to ATR)
+isPriceSpike = priceRange > atrValue * priceSpikeMultiplier
+
+// Combined volatility spike (only after first 30 min of session)
+isVolatilitySpike = pastFirst30Min and (isVolumeSpike or isPriceSpike)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VOLD REGIME LOGIC
+// ─────────────────────────────────────────────────────────────────────────────
+
+f_candleDir(_o, _h, _l, _c) =>
+    _bodySize = _c - _o
+    _wickSize = _h - _l
+    _wickSize == 0 ? 0.0 : _bodySize / _wickSize * 100
+
+f_voldRegime(voldO, voldH, voldL, voldC, voldT, _lookback, _consLookback, _consThresh, _minConsLen) =>
+    // Session detection
+    bool _isNewSession = na(voldT[1]) or ta.change(time("D")) != 0
+    var int _barsInSession = 0
+    if _isNewSession
+        _barsInSession := 0
+    else
+        _barsInSession += 1
+
+    // Calculate scores for recent candles
+    float _netBias = 0.0
+    int _bullCount = 0
+    int _bearCount = 0
+    int _validBars = math.min(_lookback, _barsInSession)
+
+    if _validBars > 0
+        float _sumScores = 0.0
+        for i = 0 to _validBars - 1
+            _score = f_candleDir(voldO[i], voldH[i], voldL[i], voldC[i])
+            _sumScores += _score
+            if _score > 5
+                _bullCount += 1
+            else if _score < -5
+                _bearCount += 1
+        _netBias := _sumScores / _validBars
+
+    // Consolidation detection
+    var int _consCount = 0
+    var bool _inConsol = false
+
+    if _isNewSession
+        _consCount := 0
+        _inConsol := false
+
+    if _barsInSession >= _consLookback
+        _rangeHigh = ta.highest(voldH, _consLookback)
+        _rangeLow = ta.lowest(voldL, _consLookback)
+        _rangeSize = _rangeHigh - _rangeLow
+        _midPoint = (_rangeHigh + _rangeLow) / 2
+        _rangePct = math.abs(_midPoint) > 0 ? (_rangeSize / math.abs(_midPoint)) * 100 : 0.0
+
+        if _rangePct < _consThresh
+            _consCount += 1
+            if _consCount >= _minConsLen
+                _inConsol := true
+        else
+            if _inConsol
+                _consCount := 0
+                _inConsol := false
+            else
+                _consCount := 0
+    else
+        _consCount := 0
+        _inConsol := false
+
+    // Trend determination
+    var int _trendDir = 0
+    if _isNewSession
+        _trendDir := 0
+
+    if not _inConsol and _barsInSession >= _lookback
+        if _bullCount >= _lookback * 0.6
+            _trendDir := 1
+        else if _bearCount >= _lookback * 0.6
+            _trendDir := -1
+        else if _netBias > 15
+            _trendDir := 1
+        else if _netBias < -15
+            _trendDir := -1
+        else
+            _recentScore = f_candleDir(voldO, voldH, voldL, voldC)
+            _prevScore = f_candleDir(voldO[1], voldH[1], voldL[1], voldC[1])
+            _recentBias = (_recentScore * 2 + _prevScore) / 3
+            if _recentBias > 10
+                _trendDir := 1
+            else if _recentBias < -10
+                _trendDir := -1
+            else
+                _trendDir := 0
+    else if _inConsol
+        _trendDir := 0
+
+    _trendDir
+
+// Request VOLD data
+[voldO5, voldH5, voldL5, voldC5, voldT5] = request.security(voldSymbol, "5", [open, high, low, close, time], barmerge.gaps_off, barmerge.lookahead_off)
+
+int voldRegime = f_voldRegime(voldO5, voldH5, voldL5, voldC5, voldT5, voldLookback, voldConsLookback, voldConsThresh, voldMinConsLen)
+
+bool voldBullish = voldRegime == 1
+bool voldBearish = voldRegime == -1
+bool voldNeutral = voldRegime == 0
+
+string voldRegimeText = voldBullish ? "Bullish" : (voldBearish ? "Bearish" : "Neutral")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SESSION VWAP
+// ─────────────────────────────────────────────────────────────────────────────
+
+var float cumPV = na
+var float cumV = na
+var float prevVWAP = na
+var line[] vwapLines = array.new_line()
+
+if newSess
+    cumPV := 0.0
+    cumV := 0.0
+    prevVWAP := na
+
+float sessVWAP = na
+if inSess
+    tp = (high + low + close) / 3.0
+    cumPV += tp * volume
+    cumV += volume
+    sessVWAP := cumV != 0 ? (cumPV / cumV) : na
+
+    if not na(sessVWAP)
+        if not na(prevVWAP)
+            line ln = line.new(bar_index - 1, prevVWAP, bar_index, sessVWAP,
+                xloc=xloc.bar_index, extend=extend.none, color=color.yellow, width=2)
+            array.push(vwapLines, ln)
+        prevVWAP := sessVWAP
+
+// Clean up old VWAP lines (keep 1 session)
+maxVwapLines = int(math.ceil(sessionLenMin / chartTfMin))
+while array.size(vwapLines) > maxVwapLines
+    line.delete(array.shift(vwapLines))
+
+// VWAP support logic
+bool vwapBelowPrice = not na(sessVWAP) and sessVWAP < close  // Support for upside
+bool vwapAbovePrice = not na(sessVWAP) and sessVWAP > close  // Support for downside
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FVG DETECTION (15min and 1hr)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Request 15min data
+[o15, h15, l15, c15, t15] = request.security(syminfo.tickerid, "15", [open, high, low, close, time], barmerge.gaps_off, barmerge.lookahead_off)
+
+// Request 1hr data
+[o60, h60, l60, c60, t60] = request.security(syminfo.tickerid, "60", [open, high, low, close, time], barmerge.gaps_off, barmerge.lookahead_off)
+
+// 15min FVG detection
+bool new15mBar = t15 != t15[1]
+
+var float comp15H_1 = na
+var float comp15L_1 = na
+var int comp15T_1 = na
+var float comp15H_2 = na
+var float comp15L_2 = na
+var int comp15T_2 = na
+var float comp15H_3 = na
+var float comp15L_3 = na
+var int comp15T_3 = na
+
+if new15mBar
+    comp15H_3 := comp15H_2
+    comp15L_3 := comp15L_2
+    comp15T_3 := comp15T_2
+    comp15H_2 := comp15H_1
+    comp15L_2 := comp15L_1
+    comp15T_2 := comp15T_1
+    comp15H_1 := h15[1]
+    comp15L_1 := l15[1]
+    comp15T_1 := t15[1]
+
+bool bull15 = new15mBar and not na(comp15L_1) and not na(comp15H_3) and comp15L_1 > comp15H_3
+bool bear15 = new15mBar and not na(comp15H_1) and not na(comp15L_3) and comp15H_1 < comp15L_3
+
+float top15 = bull15 ? comp15L_1 : (bear15 ? comp15L_3 : na)
+float bot15 = bull15 ? comp15H_3 : (bear15 ? comp15H_1 : na)
+int lt15 = comp15T_3
+
+// 1hr FVG detection
+bool new1hBar = t60 != t60[1]
+
+var float comp60H_1 = na
+var float comp60L_1 = na
+var int comp60T_1 = na
+var float comp60H_2 = na
+var float comp60L_2 = na
+var int comp60T_2 = na
+var float comp60H_3 = na
+var float comp60L_3 = na
+var int comp60T_3 = na
+
+if new1hBar
+    comp60H_3 := comp60H_2
+    comp60L_3 := comp60L_2
+    comp60T_3 := comp60T_2
+    comp60H_2 := comp60H_1
+    comp60L_2 := comp60L_1
+    comp60T_2 := comp60T_1
+    comp60H_1 := h60[1]
+    comp60L_1 := l60[1]
+    comp60T_1 := t60[1]
+
+bool bull60 = new1hBar and not na(comp60L_1) and not na(comp60H_3) and comp60L_1 > comp60H_3
+bool bear60 = new1hBar and not na(comp60H_1) and not na(comp60L_3) and comp60H_1 < comp60L_3
+
+float top60 = bull60 ? comp60L_1 : (bear60 ? comp60L_3 : na)
+float bot60 = bull60 ? comp60H_3 : (bear60 ? comp60H_1 : na)
+int lt60 = comp60T_3
+
+// FVG Storage Arrays
+// State: 0=unfilled, 1=filled, 2=inversed
+var box[] fvgBoxes15 = array.new_box()
+var label[] fvgLabels15 = array.new_label()
+var bool[] fvgIsBull15 = array.new_bool()
+var float[] fvgTop15 = array.new_float()
+var float[] fvgBot15 = array.new_float()
+var int[] fvgState15 = array.new_int()
+var int[] fvgTime15 = array.new_int()
+
+var box[] fvgBoxes60 = array.new_box()
+var label[] fvgLabels60 = array.new_label()
+var bool[] fvgIsBull60 = array.new_bool()
+var float[] fvgTop60 = array.new_float()
+var float[] fvgBot60 = array.new_float()
+var int[] fvgState60 = array.new_int()
+var int[] fvgTime60 = array.new_int()
+
+// Max age for FVGs
+max15mAge = 2 * 24 * 60 * 60 * 1000  // 2 days (2 sessions)
+max1hAge = 7 * 24 * 60 * 60 * 1000   // 1 week
+
+// Add FVG function
+f_addFVG(boxes, labels, isBullArr, topArr, botArr, stateArr, timeArr, _isBull, _top, _bot, _time, _color, _text) =>
+    rightT = _time + 100 * chartTfMs
+    midP = (_top + _bot) / 2.0
+    midT = _time + 50 * chartTfMs
+
+    bx = box.new(left=_time, right=rightT, top=_top, bottom=_bot, xloc=xloc.bar_time, bgcolor=_color, border_color=color.new(_color, 0))
+    lb = label.new(x=midT, y=midP, xloc=xloc.bar_time, yloc=yloc.price, text=_text,
+        style=label.style_label_center, color=color.new(color.white, 100), textcolor=color.black, size=size.small)
+
+    array.push(boxes, bx)
+    array.push(labels, lb)
+    array.push(isBullArr, _isBull)
+    array.push(topArr, _top)
+    array.push(botArr, _bot)
+    array.push(stateArr, 0)
+    array.push(timeArr, _time)
+
+// Add new 15min FVGs
+if (bull15 or bear15) and show15mFVG and not na(top15) and not na(bot15)
+    f_addFVG(fvgBoxes15, fvgLabels15, fvgIsBull15, fvgTop15, fvgBot15, fvgState15, fvgTime15, bull15, top15, bot15, lt15, fvg15mColor, fvg15mText)
+
+// Add new 1hr FVGs
+if (bull60 or bear60) and show1hFVG and not na(top60) and not na(bot60)
+    f_addFVG(fvgBoxes60, fvgLabels60, fvgIsBull60, fvgTop60, fvgBot60, fvgState60, fvgTime60, bull60, top60, bot60, lt60, fvg1hColor, fvg1hText)
+
+// Update 15min FVG states and clean up
+if array.size(fvgBoxes15) > 0
+    for i = array.size(fvgBoxes15) - 1 to 0
+        bx = array.get(fvgBoxes15, i)
+        lb = array.get(fvgLabels15, i)
+        isBull = array.get(fvgIsBull15, i)
+        topVal = array.get(fvgTop15, i)
+        botVal = array.get(fvgBot15, i)
+        st = array.get(fvgState15, i)
+        t = array.get(fvgTime15, i)
+
+        // Check age - remove if too old
+        if time - t > max15mAge
+            box.delete(array.remove(fvgBoxes15, i))
+            label.delete(array.remove(fvgLabels15, i))
+            array.remove(fvgIsBull15, i)
+            array.remove(fvgTop15, i)
+            array.remove(fvgBot15, i)
+            array.remove(fvgState15, i)
+            array.remove(fvgTime15, i)
+        else
+            // Update state based on price action
+            if st == 0  // Unfilled
+                if low <= topVal and high >= botVal
+                    array.set(fvgState15, i, 1)
+                    box.set_bgcolor(bx, fvgFilledColor)
+            else if st == 1  // Filled
+                if isBull and close < botVal
+                    array.set(fvgState15, i, 2)
+                else if not isBull and close > topVal
+                    array.set(fvgState15, i, 2)
+
+            // Extend box to current time
+            box.set_right(bx, time + 50 * chartTfMs)
+
+// Update 1hr FVG states and clean up
+if array.size(fvgBoxes60) > 0
+    for i = array.size(fvgBoxes60) - 1 to 0
+        bx = array.get(fvgBoxes60, i)
+        lb = array.get(fvgLabels60, i)
+        isBull = array.get(fvgIsBull60, i)
+        topVal = array.get(fvgTop60, i)
+        botVal = array.get(fvgBot60, i)
+        st = array.get(fvgState60, i)
+        t = array.get(fvgTime60, i)
+
+        // Check age - remove if too old
+        if time - t > max1hAge
+            box.delete(array.remove(fvgBoxes60, i))
+            label.delete(array.remove(fvgLabels60, i))
+            array.remove(fvgIsBull60, i)
+            array.remove(fvgTop60, i)
+            array.remove(fvgBot60, i)
+            array.remove(fvgState60, i)
+            array.remove(fvgTime60, i)
+        else
+            // Update state based on price action
+            if st == 0  // Unfilled
+                if low <= topVal and high >= botVal
+                    array.set(fvgState60, i, 1)
+                    box.set_bgcolor(bx, fvgFilledColor)
+            else if st == 1  // Filled
+                if isBull and close < botVal
+                    array.set(fvgState60, i, 2)
+                else if not isBull and close > topVal
+                    array.set(fvgState60, i, 2)
+
+            // Extend box to current time
+            box.set_right(bx, time + 50 * chartTfMs)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIND NEAREST FVGs FOR PROBABILITY CALCULATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Find nearest unfilled bearish 15m FVG above price (resistance for upside)
+f_nearestUnfilledBearFVG15() =>
+    float nearest = na
+    if array.size(fvgTop15) > 0
+        float minDist = na
+        for i = 0 to array.size(fvgTop15) - 1
+            if array.get(fvgState15, i) == 0 and not array.get(fvgIsBull15, i)
+                bot = array.get(fvgBot15, i)
+                if bot > close
+                    dist = bot - close
+                    if na(minDist) or dist < minDist
+                        minDist := dist
+                        nearest := bot
+    nearest
+
+// Find nearest unfilled bullish 15m FVG below price (resistance for downside)
+f_nearestUnfilledBullFVG15() =>
+    float nearest = na
+    if array.size(fvgTop15) > 0
+        float minDist = na
+        for i = 0 to array.size(fvgTop15) - 1
+            if array.get(fvgState15, i) == 0 and array.get(fvgIsBull15, i)
+                top = array.get(fvgTop15, i)
+                if top < close
+                    dist = close - top
+                    if na(minDist) or dist < minDist
+                        minDist := dist
+                        nearest := top
+    nearest
+
+// Find nearest unfilled bearish 1hr FVG above price
+f_nearestUnfilledBearFVG60() =>
+    float nearest = na
+    if array.size(fvgTop60) > 0
+        float minDist = na
+        for i = 0 to array.size(fvgTop60) - 1
+            if array.get(fvgState60, i) == 0 and not array.get(fvgIsBull60, i)
+                bot = array.get(fvgBot60, i)
+                if bot > close
+                    dist = bot - close
+                    if na(minDist) or dist < minDist
+                        minDist := dist
+                        nearest := bot
+    nearest
+
+// Find nearest unfilled bullish 1hr FVG below price
+f_nearestUnfilledBullFVG60() =>
+    float nearest = na
+    if array.size(fvgTop60) > 0
+        float minDist = na
+        for i = 0 to array.size(fvgTop60) - 1
+            if array.get(fvgState60, i) == 0 and array.get(fvgIsBull60, i)
+                top = array.get(fvgTop60, i)
+                if top < close
+                    dist = close - top
+                    if na(minDist) or dist < minDist
+                        minDist := dist
+                        nearest := top
+    nearest
+
+// Find nearest filled bullish 15m FVG below price (support for upside)
+f_nearestFilledBullFVG15() =>
+    float nearest = na
+    if array.size(fvgTop15) > 0
+        float minDist = na
+        for i = 0 to array.size(fvgTop15) - 1
+            if array.get(fvgState15, i) == 1 and array.get(fvgIsBull15, i)
+                top = array.get(fvgTop15, i)
+                if top < close
+                    dist = close - top
+                    if na(minDist) or dist < minDist
+                        minDist := dist
+                        nearest := top
+    nearest
+
+// Find nearest filled bearish 15m FVG above price (support for downside)
+f_nearestFilledBearFVG15() =>
+    float nearest = na
+    if array.size(fvgTop15) > 0
+        float minDist = na
+        for i = 0 to array.size(fvgTop15) - 1
+            if array.get(fvgState15, i) == 1 and not array.get(fvgIsBull15, i)
+                bot = array.get(fvgBot15, i)
+                if bot > close
+                    dist = bot - close
+                    if na(minDist) or dist < minDist
+                        minDist := dist
+                        nearest := bot
+    nearest
+
+// Find nearest filled bullish 1hr FVG below price (support for upside)
+f_nearestFilledBullFVG60() =>
+    float nearest = na
+    if array.size(fvgTop60) > 0
+        float minDist = na
+        for i = 0 to array.size(fvgTop60) - 1
+            if array.get(fvgState60, i) == 1 and array.get(fvgIsBull60, i)
+                top = array.get(fvgTop60, i)
+                if top < close
+                    dist = close - top
+                    if na(minDist) or dist < minDist
+                        minDist := dist
+                        nearest := top
+    nearest
+
+// Find nearest filled bearish 1hr FVG above price (support for downside)
+f_nearestFilledBearFVG60() =>
+    float nearest = na
+    if array.size(fvgTop60) > 0
+        float minDist = na
+        for i = 0 to array.size(fvgTop60) - 1
+            if array.get(fvgState60, i) == 1 and not array.get(fvgIsBull60, i)
+                bot = array.get(fvgBot60, i)
+                if bot > close
+                    dist = bot - close
+                    if na(minDist) or dist < minDist
+                        minDist := dist
+                        nearest := bot
+    nearest
+
+// Get all nearest levels
+nearestBearFVG15 = f_nearestUnfilledBearFVG15()
+nearestBullFVG15 = f_nearestUnfilledBullFVG15()
+nearestBearFVG60 = f_nearestUnfilledBearFVG60()
+nearestBullFVG60 = f_nearestUnfilledBullFVG60()
+nearestFilledBullFVG15 = f_nearestFilledBullFVG15()
+nearestFilledBearFVG15 = f_nearestFilledBearFVG15()
+nearestFilledBullFVG60 = f_nearestFilledBullFVG60()
+nearestFilledBearFVG60 = f_nearestFilledBearFVG60()
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBABILITY CALCULATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Base probability
+float baseProbability = 10.0
+
+// Calculate distances
+distSwingHigh = not na(nearestSwingHigh) ? nearestSwingHigh - close : na
+distSwingLow = not na(nearestSwingLow) ? close - nearestSwingLow : na
+distBearFVG15 = not na(nearestBearFVG15) ? nearestBearFVG15 - close : na
+distBullFVG15 = not na(nearestBullFVG15) ? close - nearestBullFVG15 : na
+distBearFVG60 = not na(nearestBearFVG60) ? nearestBearFVG60 - close : na
+distBullFVG60 = not na(nearestBullFVG60) ? close - nearestBullFVG60 : na
+
+// === UPSIDE PROBABILITY ===
+float upsideProb = baseProbability
+
+// Start with resistance bonus (+40%)
+float upsideResistanceBonus = 40.0
+
+// Subtract for close resistances
+if not na(distSwingHigh) and distSwingHigh < resistanceThreshold
+    upsideResistanceBonus := upsideResistanceBonus - 15.0
+
+if not na(distBearFVG15) and distBearFVG15 < resistanceThreshold
+    upsideResistanceBonus := upsideResistanceBonus - 15.0
+
+if not na(distBearFVG60) and distBearFVG60 < resistanceThreshold1h
+    upsideResistanceBonus := upsideResistanceBonus - 20.0
+
+upsideProb := upsideProb + math.max(0, upsideResistanceBonus)
+
+// VWAP support (+15%)
+bool hasVwapSupportUpside = vwapBelowPrice
+if hasVwapSupportUpside
+    upsideProb := upsideProb + 15.0
+
+// Filled FVG support (+10%) - only counts if closer to price than unfilled FVG
+// For upside: filled bullish FVG below price, must be closer than unfilled bullish FVG
+float distFilledBull15 = not na(nearestFilledBullFVG15) ? close - nearestFilledBullFVG15 : na
+float distFilledBull60 = not na(nearestFilledBullFVG60) ? close - nearestFilledBullFVG60 : na
+
+// Check if filled FVG is valid (closer than unfilled, and state is not inversed)
+bool validFilledBull15 = not na(distFilledBull15) and (na(distBullFVG15) or distFilledBull15 < distBullFVG15)
+bool validFilledBull60 = not na(distFilledBull60) and (na(distBullFVG60) or distFilledBull60 < distBullFVG60)
+bool hasFVGSupportUpside = validFilledBull15 or validFilledBull60
+
+if hasFVGSupportUpside
+    upsideProb := upsideProb + 10.0
+
+// VOLD regime (+25% if bullish)
+if voldBullish
+    upsideProb := upsideProb + 25.0
+
+// Volatility spike (-25%)
+if isVolatilitySpike
+    upsideProb := upsideProb - 25.0
+
+// Clamp probability
+upsideProb := math.max(0, math.min(100, upsideProb))
+
+// === DOWNSIDE PROBABILITY ===
+float downsideProb = baseProbability
+
+// Start with resistance bonus (+40%)
+float downsideResistanceBonus = 40.0
+
+// Subtract for close resistances
+if not na(distSwingLow) and distSwingLow < resistanceThreshold
+    downsideResistanceBonus := downsideResistanceBonus - 15.0
+
+if not na(distBullFVG15) and distBullFVG15 < resistanceThreshold
+    downsideResistanceBonus := downsideResistanceBonus - 15.0
+
+if not na(distBullFVG60) and distBullFVG60 < resistanceThreshold1h
+    downsideResistanceBonus := downsideResistanceBonus - 20.0
+
+downsideProb := downsideProb + math.max(0, downsideResistanceBonus)
+
+// VWAP support (+15%)
+bool hasVwapSupportDownside = vwapAbovePrice
+if hasVwapSupportDownside
+    downsideProb := downsideProb + 15.0
+
+// Filled FVG support (+10%) - only counts if closer to price than unfilled FVG
+// For downside: filled bearish FVG above price, must be closer than unfilled bearish FVG
+float distFilledBear15 = not na(nearestFilledBearFVG15) ? nearestFilledBearFVG15 - close : na
+float distFilledBear60 = not na(nearestFilledBearFVG60) ? nearestFilledBearFVG60 - close : na
+
+// Check if filled FVG is valid (closer than unfilled)
+bool validFilledBear15 = not na(distFilledBear15) and (na(distBearFVG15) or distFilledBear15 < distBearFVG15)
+bool validFilledBear60 = not na(distFilledBear60) and (na(distBearFVG60) or distFilledBear60 < distBearFVG60)
+bool hasFVGSupportDownside = validFilledBear15 or validFilledBear60
+
+if hasFVGSupportDownside
+    downsideProb := downsideProb + 10.0
+
+// VOLD regime (+25% if bearish)
+if voldBearish
+    downsideProb := downsideProb + 25.0
+
+// Volatility spike (-25%)
+if isVolatilitySpike
+    downsideProb := downsideProb - 25.0
+
+// Clamp probability
+downsideProb := math.max(0, math.min(100, downsideProb))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BUILD SUPPORT AND RESISTANCE STRINGS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Support text for upside
+string supportUpsideText = ""
+if hasVwapSupportUpside and hasFVGSupportUpside
+    supportUpsideText := "VWAP + FVG"
+else if hasVwapSupportUpside
+    supportUpsideText := "VWAP"
+else if hasFVGSupportUpside
+    supportUpsideText := "FVG"
+
+// Support text for downside
+string supportDownsideText = ""
+if hasVwapSupportDownside and hasFVGSupportDownside
+    supportDownsideText := "VWAP + FVG"
+else if hasVwapSupportDownside
+    supportDownsideText := "VWAP"
+else if hasFVGSupportDownside
+    supportDownsideText := "FVG"
+
+// Resistance text for upside
+string resistanceUpsideText = ""
+if not na(distSwingHigh)
+    resistanceUpsideText := "High(" + str.tostring(math.round(distSwingHigh)) + ")"
+if not na(distBearFVG15)
+    resistanceUpsideText := resistanceUpsideText + (str.length(resistanceUpsideText) > 0 ? " + " : "") + "15(" + str.tostring(math.round(distBearFVG15)) + ")"
+if not na(distBearFVG60)
+    resistanceUpsideText := resistanceUpsideText + (str.length(resistanceUpsideText) > 0 ? " + " : "") + "1hr(" + str.tostring(math.round(distBearFVG60)) + ")"
+if str.length(resistanceUpsideText) == 0
+    resistanceUpsideText := "None"
+
+// Resistance text for downside
+string resistanceDownsideText = ""
+if not na(distSwingLow)
+    resistanceDownsideText := "Low(" + str.tostring(math.round(distSwingLow)) + ")"
+if not na(distBullFVG15)
+    resistanceDownsideText := resistanceDownsideText + (str.length(resistanceDownsideText) > 0 ? " + " : "") + "15(" + str.tostring(math.round(distBullFVG15)) + ")"
+if not na(distBullFVG60)
+    resistanceDownsideText := resistanceDownsideText + (str.length(resistanceDownsideText) > 0 ? " + " : "") + "1hr(" + str.tostring(math.round(distBullFVG60)) + ")"
+if str.length(resistanceDownsideText) == 0
+    resistanceDownsideText := "None"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DETERMINE HIGHLIGHT CONDITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Check if no resistance is blocking (all distances > threshold)
+bool noUpsideResistance = (na(distSwingHigh) or distSwingHigh >= resistanceThreshold) and
+                           (na(distBearFVG15) or distBearFVG15 >= resistanceThreshold) and
+                           (na(distBearFVG60) or distBearFVG60 >= resistanceThreshold1h)
+
+bool noDownsideResistance = (na(distSwingLow) or distSwingLow >= resistanceThreshold) and
+                             (na(distBullFVG15) or distBullFVG15 >= resistanceThreshold) and
+                             (na(distBullFVG60) or distBullFVG60 >= resistanceThreshold1h)
+
+// Full highlight conditions
+bool highlightUpside = noUpsideResistance and (hasVwapSupportUpside or hasFVGSupportUpside) and not isVolatilitySpike and voldBullish
+bool highlightDownside = noDownsideResistance and (hasVwapSupportDownside or hasFVGSupportDownside) and not isVolatilitySpike and voldBearish
+
+// Probability highlight
+bool highlightUpsideProb = upsideProb >= highlightThreshold
+bool highlightDownsideProb = downsideProb >= highlightThreshold
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UI TABLE
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Colors
+color greyBg = color.new(color.gray, 70)
+color lightYellowBg = color.new(color.yellow, 70)
+color brightYellowBg = color.new(color.yellow, 40)
+color redBg = color.new(color.red, 70)
+color blackText = color.black
+
+// Table position
+var tablePos = position.top_right
+if tablePosition == "Top Left"
+    tablePos := position.top_left
+else if tablePosition == "Bottom Right"
+    tablePos := position.bottom_right
+else if tablePosition == "Bottom Left"
+    tablePos := position.bottom_left
+
+// Create table (2 columns: label + value, 8 rows)
+var table probTable = table.new(tablePos, 2, 8, bgcolor=greyBg, border_width=1, border_color=color.black)
+
+if barstate.islast and showTable
+    // Row 0: Upside Probability
+    upsideProbBg = highlightUpsideProb ? brightYellowBg : (highlightUpside ? lightYellowBg : greyBg)
+    table.cell(probTable, 0, 0, "Probability ↑", bgcolor=upsideProbBg, text_color=blackText, text_size=size.small)
+    table.cell(probTable, 1, 0, str.tostring(math.round(upsideProb)) + "%", bgcolor=upsideProbBg, text_color=blackText, text_size=size.normal)
+
+    // Row 1: Resistance Upside
+    resistanceUpsideBg = highlightUpside ? lightYellowBg : greyBg
+    table.cell(probTable, 0, 1, "Resistance ↑", bgcolor=resistanceUpsideBg, text_color=blackText, text_size=size.small)
+    table.cell(probTable, 1, 1, resistanceUpsideText, bgcolor=resistanceUpsideBg, text_color=blackText, text_size=size.small)
+
+    // Row 2: Support Upside
+    supportUpsideBg = highlightUpside ? lightYellowBg : greyBg
+    table.cell(probTable, 0, 2, "Support ↑", bgcolor=supportUpsideBg, text_color=blackText, text_size=size.small)
+    table.cell(probTable, 1, 2, supportUpsideText == "" ? "None" : supportUpsideText, bgcolor=supportUpsideBg, text_color=blackText, text_size=size.small)
+
+    // Row 3: Volatility
+    volBg = isVolatilitySpike ? redBg : greyBg
+    volText = isVolatilitySpike ? "HIGH" : "Normal"
+    table.cell(probTable, 0, 3, "Volatility", bgcolor=volBg, text_color=blackText, text_size=size.small)
+    table.cell(probTable, 1, 3, volText, bgcolor=volBg, text_color=blackText, text_size=size.small)
+
+    // Row 4: VOLD Regime
+    table.cell(probTable, 0, 4, "VOLD Regime", bgcolor=greyBg, text_color=blackText, text_size=size.small)
+    table.cell(probTable, 1, 4, voldRegimeText, bgcolor=greyBg, text_color=blackText, text_size=size.small)
+
+    // Row 5: Support Downside
+    supportDownsideBg = highlightDownside ? lightYellowBg : greyBg
+    table.cell(probTable, 0, 5, "Support ↓", bgcolor=supportDownsideBg, text_color=blackText, text_size=size.small)
+    table.cell(probTable, 1, 5, supportDownsideText == "" ? "None" : supportDownsideText, bgcolor=supportDownsideBg, text_color=blackText, text_size=size.small)
+
+    // Row 6: Resistance Downside
+    resistanceDownsideBg = highlightDownside ? lightYellowBg : greyBg
+    table.cell(probTable, 0, 6, "Resistance ↓", bgcolor=resistanceDownsideBg, text_color=blackText, text_size=size.small)
+    table.cell(probTable, 1, 6, resistanceDownsideText, bgcolor=resistanceDownsideBg, text_color=blackText, text_size=size.small)
+
+    // Row 7: Downside Probability
+    downsideProbBg = highlightDownsideProb ? brightYellowBg : (highlightDownside ? lightYellowBg : greyBg)
+    table.cell(probTable, 0, 7, "Probability ↓", bgcolor=downsideProbBg, text_color=blackText, text_size=size.small)
+    table.cell(probTable, 1, 7, str.tostring(math.round(downsideProb)) + "%", bgcolor=downsideProbBg, text_color=blackText, text_size=size.normal)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FRACTAL PLOTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+plotshape(downFractal, style=shape.triangledown, location=location.belowbar, offset=-n, color=color.red, size=size.tiny)
+plotshape(upFractal, style=shape.triangleup, location=location.abovebar, offset=-n, color=color.green, size=size.tiny)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+alertcondition(highlightUpside and highlightUpsideProb, title="High Probability Upside", message="Risk Detection: High probability upside setup detected")
+alertcondition(highlightDownside and highlightDownsideProb, title="High Probability Downside", message="Risk Detection: High probability downside setup detected")
+alertcondition(isVolatilitySpike, title="Volatility Spike", message="Risk Detection: High volatility detected - reduce position size")
