@@ -97,6 +97,7 @@ tickSize = input.float(0.25, "Tick Size (points)", minval=0.01, step=0.01, group
 // VOLD REGIME SETTINGS
 //==================================================
 groupVold = "VOLD Regime"
+useVoldRegime   = input.bool(true, "Use VOLD Regime Filter", group=groupVold, tooltip="When disabled, trades are taken without VOLD confirmation")
 voldSymbol      = input.string("USI:VOLD", "VOLD Symbol", group=groupVold)
 voldLookback    = input.int(3, "VOLD Trend Lookback Candles", minval=2, maxval=10, group=groupVold)
 voldConsLookback = input.int(8, "VOLD Consolidation Lookback", minval=4, maxval=20, group=groupVold)
@@ -226,8 +227,9 @@ f_voldRegime(voldO, voldH, voldL, voldC, voldT, _lookback, _consLookback, _consT
 
 int voldRegime = f_voldRegime(voldO5, voldH5, voldL5, voldC5, voldT5, voldLookback, voldConsLookback, voldConsThresh, voldMinConsLen)
 
-bool voldBullish = voldRegime == 1
-bool voldBearish = voldRegime == -1
+// When useVoldRegime is false, allow all trades regardless of VOLD direction
+bool voldBullish = useVoldRegime ? (voldRegime == 1) : true
+bool voldBearish = useVoldRegime ? (voldRegime == -1) : true
 
 //==================================================
 // STORAGE ARRAYS FOR FVGs
@@ -541,9 +543,10 @@ if n > 0
                 bool recentIfvg = isInversionCandle or isNextCandle
 
                 if not na(sessVWAP) and recentIfvg
-                    // Calculate FVG distance from VWAP (closest edge)
-                    float fvgClosestToVwap = bull ? fvgTop : fvgBot
-                    float fvgDistFromVwap = math.abs(fvgClosestToVwap - sessVWAP)
+                    // Calculate FVG distance from VWAP (closest edge - check both top and bottom)
+                    float distToTop = math.abs(fvgTop - sessVWAP)
+                    float distToBot = math.abs(fvgBot - sessVWAP)
+                    float fvgDistFromVwap = math.min(distToTop, distToBot)
 
                     // Check if FVG is within allowed distance from VWAP
                     bool fvgNearVwap = fvgDistFromVwap <= fvgMaxDistFromVwap
@@ -680,15 +683,31 @@ bgcolor(voldBullish ? color.new(color.green, 95) : voldBearish ? color.new(color
 //==================================================
 // INFO TABLE
 //==================================================
-var table infoTable = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 80), border_width=1)
+// Count FVGs by state for debug
+var int fvgUnfilled = 0
+var int fvgFilled = 0
+var int fvgInversed = 0
+fvgUnfilled := 0
+fvgFilled := 0
+fvgInversed := 0
+for j = 0 to array.size(state) - 1
+    int s = array.get(state, j)
+    if s == 0
+        fvgUnfilled += 1
+    else if s == 1
+        fvgFilled += 1
+    else
+        fvgInversed += 1
+
+var table infoTable = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 80), border_width=1)
 
 if barstate.islast
     table.cell(infoTable, 0, 0, "IFVG Strategy", text_color=color.white, text_size=size.small)
-    table.cell(infoTable, 1, 0, "", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 0, useVoldRegime ? "VOLD ON" : "VOLD OFF", text_color=useVoldRegime ? color.green : color.orange, text_size=size.small)
 
     table.cell(infoTable, 0, 1, "VOLD Regime:", text_color=color.white, text_size=size.small)
-    voldText = voldBullish ? "BULLISH" : voldBearish ? "BEARISH" : "NEUTRAL"
-    voldColor = voldBullish ? color.green : voldBearish ? color.red : color.gray
+    voldText = voldRegime == 1 ? "BULLISH" : voldRegime == -1 ? "BEARISH" : "NEUTRAL"
+    voldColor = voldRegime == 1 ? color.green : voldRegime == -1 ? color.red : color.gray
     table.cell(infoTable, 1, 1, voldText, text_color=voldColor, text_size=size.small)
 
     table.cell(infoTable, 0, 2, "VWAP:", text_color=color.white, text_size=size.small)
@@ -705,6 +724,17 @@ if barstate.islast
     table.cell(infoTable, 0, 5, "VWAP Tap:", text_color=color.white, text_size=size.small)
     tapText = not na(vwapTapTime) ? "ACTIVE (" + str.tostring(vwapTapCandleCount) + " candles)" : "NONE"
     table.cell(infoTable, 1, 5, tapText, text_color=not na(vwapTapTime) ? color.yellow : color.gray, text_size=size.small)
+
+    table.cell(infoTable, 0, 6, "FVGs (U/F/I):", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 6, str.tostring(fvgUnfilled) + "/" + str.tostring(fvgFilled) + "/" + str.tostring(fvgInversed), text_color=color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 7, "5m Close:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 7, str.tostring(c5, "#.##"), text_color=color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 8, "Tap Direction:", text_color=color.white, text_size=size.small)
+    tapDirText = priceAboveVwapBeforeTap == 1 ? "FROM ABOVE" : priceAboveVwapBeforeTap == -1 ? "FROM BELOW" : "N/A"
+    tapDirColor = priceAboveVwapBeforeTap == 1 ? color.green : priceAboveVwapBeforeTap == -1 ? color.red : color.gray
+    table.cell(infoTable, 1, 8, tapDirText, text_color=tapDirColor, text_size=size.small)
 
 //==================================================
 // ALERTS
