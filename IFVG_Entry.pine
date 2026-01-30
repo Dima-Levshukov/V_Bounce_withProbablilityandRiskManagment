@@ -690,14 +690,15 @@ var int fvgInversed = 0
 fvgUnfilled := 0
 fvgFilled := 0
 fvgInversed := 0
-for j = 0 to array.size(state) - 1
-    int s = array.get(state, j)
-    if s == 0
-        fvgUnfilled += 1
-    else if s == 1
-        fvgFilled += 1
-    else
-        fvgInversed += 1
+if array.size(state) > 0
+    for j = 0 to array.size(state) - 1
+        int s = array.get(state, j)
+        if s == 0
+            fvgUnfilled += 1
+        else if s == 1
+            fvgFilled += 1
+        else
+            fvgInversed += 1
 
 var table infoTable = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 80), border_width=1)
 
