@@ -240,7 +240,7 @@ var float[] botArr  = array.new_float()
 var int[]   leftT   = array.new_int()
 var int[]   state   = array.new_int()      // 0=unfilled, 1=filled, 2=inversed
 var int[]   lastTFt = array.new_int()
-var int[]   invBarIdx = array.new_int()    // bar_index when FVG was inversed
+var int[]   invTime = array.new_int()      // 5min candle time when FVG was inversed
 var float[] invCandleWickHigh = array.new_float()  // high of candle that inversed
 var float[] invCandleWickLow = array.new_float()   // low of candle that inversed
 var bool[]  entryUsed = array.new_bool()   // whether this IFVG has been used for an entry attempt
@@ -248,10 +248,11 @@ var bool[]  entryUsed = array.new_bool()   // whether this IFVG has been used fo
 //==================================================
 // VWAP TAP TRACKING
 //==================================================
-var int vwapTapBarIdx = na          // bar_index of last VWAP tap
+var int vwapTapTime = na            // 5min candle time of last VWAP tap
 var float vwapTapWickHigh = na      // high of candle that tapped VWAP
 var float vwapTapWickLow = na       // low of candle that tapped VWAP
 var int priceAboveVwapBeforeTap = 0 // 0=unknown, 1=above, -1=below
+var int vwapTapCandleCount = 0      // count of 5min candles since tap
 
 //==================================================
 // HELPERS
@@ -319,7 +320,7 @@ f_deleteAt(_i) =>
     array.remove(leftT, _i)
     array.remove(state, _i)
     array.remove(lastTFt, _i)
-    array.remove(invBarIdx, _i)
+    array.remove(invTime, _i)
     array.remove(invCandleWickHigh, _i)
     array.remove(invCandleWickLow, _i)
     array.remove(entryUsed, _i)
@@ -378,7 +379,7 @@ f_addFvg(_bull, _top, _bot, _leftTime) =>
         array.push(leftT, _leftTime)
         array.push(state, 0)
         array.push(lastTFt, na)
-        array.push(invBarIdx, na)
+        array.push(invTime, na)
         array.push(invCandleWickHigh, na)
         array.push(invCandleWickLow, na)
         array.push(entryUsed, false)
@@ -398,10 +399,11 @@ if newSess
     cumPV := 0.0
     cumV  := 0.0
     prevVWAP := na
-    vwapTapBarIdx := na
+    vwapTapTime := na
     vwapTapWickHigh := na
     vwapTapWickLow := na
     priceAboveVwapBeforeTap := 0
+    vwapTapCandleCount := 0
 
 float sessVWAP = na
 if inSess
@@ -458,20 +460,30 @@ if strategy.position_size == 0 and strategy.position_size[1] != 0
 var bool needIfvgCap = false
 needIfvgCap := false
 
-// Track VWAP tap (price comes within vwapTapSlippage of VWAP)
-if inSess and not na(sessVWAP)
-    bool tappedVwap = (low <= sessVWAP + vwapTapSlippage) and (high >= sessVWAP - vwapTapSlippage)
-    if tappedVwap and na(vwapTapBarIdx)
-        vwapTapBarIdx := bar_index
-        vwapTapWickHigh := high
-        vwapTapWickLow := low
-        priceAboveVwapBeforeTap := close[1] > sessVWAP ? 1 : -1
-    // Reset if too many bars have passed since tap
-    if not na(vwapTapBarIdx) and (bar_index - vwapTapBarIdx) > maxCandlesForEntry
-        vwapTapBarIdx := na
+// Track VWAP tap using 5min candle time (works on any chart timeframe)
+// Tap detection happens on new 5min candles only
+var int lastTapCheckTime = na
+bool new5mCandle = t5 != lastTapCheckTime
+lastTapCheckTime := t5
+
+if inSess and not na(sessVWAP) and new5mCandle
+    bool tappedVwap = (l5 <= sessVWAP + vwapTapSlippage) and (h5 >= sessVWAP - vwapTapSlippage)
+    if tappedVwap and na(vwapTapTime)
+        vwapTapTime := t5
+        vwapTapWickHigh := h5
+        vwapTapWickLow := l5
+        priceAboveVwapBeforeTap := c5[1] > sessVWAP ? 1 : -1
+        vwapTapCandleCount := 0
+    // Increment candle count if we have an active tap
+    else if not na(vwapTapTime)
+        vwapTapCandleCount += 1
+    // Reset if too many 5min candles have passed since tap
+    if not na(vwapTapTime) and vwapTapCandleCount > maxCandlesForEntry
+        vwapTapTime := na
         vwapTapWickHigh := na
         vwapTapWickLow := na
         priceAboveVwapBeforeTap := 0
+        vwapTapCandleCount := 0
 
 // Process FVGs for state updates and entry signals
 int n = array.size(boxes)
@@ -510,7 +522,7 @@ if n > 0
                     st := 2
                     needIfvgCap := true
                     justInversed := true
-                    array.set(invBarIdx, i, bar_index)
+                    array.set(invTime, i, curT)
                     array.set(invCandleWickHigh, i, curH)
                     array.set(invCandleWickLow, i, curL)
 
@@ -519,12 +531,14 @@ if n > 0
             // ======================================================
             bool alreadyUsed = array.get(entryUsed, i)
             if st == 2 and entryWindow and strategy.position_size == 0 and not alreadyUsed
-                int invBar = array.get(invBarIdx, i)
+                int fvgInvTime = array.get(invTime, i)
                 float invWickH = array.get(invCandleWickHigh, i)
                 float invWickL = array.get(invCandleWickLow, i)
 
-                // Only consider recently inversed FVGs (within last 2 candles for VWAP break)
-                bool recentIfvg = not na(invBar) and (bar_index - invBar) <= 1
+                // Check if this is the inversion candle or the next 5min candle
+                bool isInversionCandle = justInversed
+                bool isNextCandle = not na(fvgInvTime) and (curT > fvgInvTime) and (curT - fvgInvTime <= 5 * 60 * 1000)
+                bool recentIfvg = isInversionCandle or isNextCandle
 
                 if not na(sessVWAP) and recentIfvg
                     // Calculate FVG distance from VWAP (closest edge)
@@ -543,9 +557,8 @@ if n > 0
                     // Long: Price was above VWAP, tapped it, inversed a BEARISH FVG (close above top), VOLD bullish
                     // Short: Price was below VWAP, tapped it, inversed a BULLISH FVG (close below bot), VOLD bearish
 
-                    if not na(vwapTapBarIdx) and fvgNearVwap
-                        int candlesSinceTap = bar_index - vwapTapBarIdx
-                        bool withinTapWindow = candlesSinceTap <= maxCandlesForEntry
+                    if not na(vwapTapTime) and fvgNearVwap
+                        bool withinTapWindow = vwapTapCandleCount <= maxCandlesForEntry
                         bool ifvgCloseNearVwap = closeDistFromVwap <= ifvgMaxDistFromVwap
 
                         if withinTapWindow and ifvgCloseNearVwap and justInversed
@@ -562,10 +575,11 @@ if n > 0
                                         entryContracts := qty
                                         array.set(entryUsed, i, true)
                                         // Reset tap tracking
-                                        vwapTapBarIdx := na
+                                        vwapTapTime := na
                                         vwapTapWickHigh := na
                                         vwapTapWickLow := na
                                         priceAboveVwapBeforeTap := 0
+                                        vwapTapCandleCount := 0
 
                             // Short setup: was below VWAP, tapped, inversed bullish FVG
                             if bull and priceAboveVwapBeforeTap == -1 and curC < fvgBot and voldBearish
@@ -580,10 +594,11 @@ if n > 0
                                         entryContracts := qty
                                         array.set(entryUsed, i, true)
                                         // Reset tap tracking
-                                        vwapTapBarIdx := na
+                                        vwapTapTime := na
                                         vwapTapWickHigh := na
                                         vwapTapWickLow := na
                                         priceAboveVwapBeforeTap := 0
+                                        vwapTapCandleCount := 0
 
                     // ----------------------------------------
                     // ENTRY TYPE 2: IFVG + VWAP Break
@@ -592,10 +607,7 @@ if n > 0
                     // Short: Inversed bullish FVG, then price closes below VWAP (break down)
                     // Note: VWAP break can happen on same candle as inverse OR the next candle
 
-                    bool isInverseCandle = justInversed
-                    bool isNextCandle = not na(invBar) and (bar_index - invBar) == 1
-
-                    if fvgNearVwap and closeDistFromVwap <= vwapBreakMaxDist and (isInverseCandle or isNextCandle)
+                    if fvgNearVwap and closeDistFromVwap <= vwapBreakMaxDist and recentIfvg
                         // Long: Bearish FVG inversed (close above top), and close is above VWAP
                         if (not bull) and st == 2 and curC > sessVWAP and voldBullish
                             // Check that price broke through VWAP (was below or at, now above)
@@ -691,8 +703,8 @@ if barstate.islast
     table.cell(infoTable, 1, 4, entryWindow ? "OPEN" : "CLOSED", text_color=entryWindow ? color.green : color.red, text_size=size.small)
 
     table.cell(infoTable, 0, 5, "VWAP Tap:", text_color=color.white, text_size=size.small)
-    tapText = not na(vwapTapBarIdx) ? "ACTIVE (" + str.tostring(bar_index - vwapTapBarIdx) + " bars)" : "NONE"
-    table.cell(infoTable, 1, 5, tapText, text_color=not na(vwapTapBarIdx) ? color.yellow : color.gray, text_size=size.small)
+    tapText = not na(vwapTapTime) ? "ACTIVE (" + str.tostring(vwapTapCandleCount) + " candles)" : "NONE"
+    table.cell(infoTable, 1, 5, tapText, text_color=not na(vwapTapTime) ? color.yellow : color.gray, text_size=size.small)
 
 //==================================================
 // ALERTS
