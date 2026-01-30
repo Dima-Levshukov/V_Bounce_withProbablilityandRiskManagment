@@ -139,7 +139,8 @@ f_candleDir(_o, _h, _l, _c) =>
     _wickSize == 0 ? 0.0 : _bodySize / _wickSize * 100
 
 f_voldRegime(voldO, voldH, voldL, voldC, voldT, _lookback, _consLookback, _consThresh, _minConsLen) =>
-    bool _isNewSession = na(voldT[1]) or ta.change(time("D")) != 0
+    int _dayChange = ta.change(time("D"))
+    bool _isNewSession = na(voldT[1]) or _dayChange != 0
     var int _barsInSession = 0
     if _isNewSession
         _barsInSession := 0
@@ -250,7 +251,7 @@ var bool[]  entryUsed = array.new_bool()   // whether this IFVG has been used fo
 var int vwapTapBarIdx = na          // bar_index of last VWAP tap
 var float vwapTapWickHigh = na      // high of candle that tapped VWAP
 var float vwapTapWickLow = na       // low of candle that tapped VWAP
-var bool priceAboveVwapBeforeTap = na
+var int priceAboveVwapBeforeTap = 0 // 0=unknown, 1=above, -1=below
 
 //==================================================
 // HELPERS
@@ -402,7 +403,7 @@ if newSess
     vwapTapBarIdx := na
     vwapTapWickHigh := na
     vwapTapWickLow := na
-    priceAboveVwapBeforeTap := na
+    priceAboveVwapBeforeTap := 0
 
 float sessVWAP = na
 if inSess
@@ -466,13 +467,13 @@ if inSess and not na(sessVWAP)
         vwapTapBarIdx := bar_index
         vwapTapWickHigh := high
         vwapTapWickLow := low
-        priceAboveVwapBeforeTap := close[1] > sessVWAP
+        priceAboveVwapBeforeTap := close[1] > sessVWAP ? 1 : -1
     // Reset if too many bars have passed since tap
     if not na(vwapTapBarIdx) and (bar_index - vwapTapBarIdx) > maxCandlesForEntry
         vwapTapBarIdx := na
         vwapTapWickHigh := na
         vwapTapWickLow := na
-        priceAboveVwapBeforeTap := na
+        priceAboveVwapBeforeTap := 0
 
 // Process FVGs for state updates and entry signals
 int n = array.size(boxes)
@@ -551,7 +552,7 @@ if n > 0
 
                         if withinTapWindow and ifvgCloseNearVwap and justInversed
                             // Long setup: was above VWAP, tapped, inversed bearish FVG
-                            if (not bull) and priceAboveVwapBeforeTap and curC > fvgTop and voldBullish
+                            if (not bull) and priceAboveVwapBeforeTap == 1 and curC > fvgTop and voldBullish
                                 float stopLevel = vwapTapWickLow
                                 float stopDist = curC - stopLevel
                                 if stopDist > 0
@@ -566,10 +567,10 @@ if n > 0
                                         vwapTapBarIdx := na
                                         vwapTapWickHigh := na
                                         vwapTapWickLow := na
-                                        priceAboveVwapBeforeTap := na
+                                        priceAboveVwapBeforeTap := 0
 
                             // Short setup: was below VWAP, tapped, inversed bullish FVG
-                            if bull and (not priceAboveVwapBeforeTap) and curC < fvgBot and voldBearish
+                            if bull and priceAboveVwapBeforeTap == -1 and curC < fvgBot and voldBearish
                                 float stopLevel = vwapTapWickHigh
                                 float stopDist = stopLevel - curC
                                 if stopDist > 0
@@ -584,7 +585,7 @@ if n > 0
                                         vwapTapBarIdx := na
                                         vwapTapWickHigh := na
                                         vwapTapWickLow := na
-                                        priceAboveVwapBeforeTap := na
+                                        priceAboveVwapBeforeTap := 0
 
                     // ----------------------------------------
                     // ENTRY TYPE 2: IFVG + VWAP Break
