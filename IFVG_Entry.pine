@@ -362,7 +362,7 @@ f_removeOverlappingIfvg(_top, _bot) =>
 
 f_addFvg(_bull, _top, _bot, _leftTime) =>
     if not showFvgBoxes
-        na
+        false
     else
         int rT = _leftTime + rightMs
         float midP = (_top + _bot) / 2.0
@@ -387,6 +387,7 @@ f_addFvg(_bull, _top, _bot, _leftTime) =>
 
         f_removeOverlappingIfvg(_top, _bot)
         f_enforceCapNormal()
+        true
 
 //==================================================
 // SESSION VWAP
