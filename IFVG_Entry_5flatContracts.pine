@@ -1,0 +1,692 @@
+//@version=6
+strategy("IFVG_Entry_5flatContracts",
+     overlay=true,
+     max_boxes_count=500,
+     max_labels_count=500,
+     max_lines_count=500,
+     initial_capital=100000,
+     default_qty_type=strategy.fixed,
+     default_qty_value=5,
+     commission_type=strategy.commission.cash_per_contract,
+     commission_value=0.62,
+     slippage=1)
+
+//==================================================
+// SESSION SETTINGS
+//==================================================
+sessionRTH       = input.session("0930-1600", "RTH Session (Exchange Time)")
+entryStartMin    = input.int(30, "Entries start minutes after open", minval=0, maxval=240)
+entryStopMin     = input.int(60, "Entries stop minutes before close", minval=0, maxval=240)
+
+//==================================================
+// VISIBILITY
+//==================================================
+groupVis = "Visibility"
+showFvgBoxes     = input.bool(true, "Show FVG Boxes", group=groupVis)
+showUnfilled     = input.bool(true, "Show Unfilled FVGs", group=groupVis)
+showFilled       = input.bool(true, "Show Filled FVGs", group=groupVis)
+showInversed     = input.bool(true, "Show Inversed FVGs", group=groupVis)
+
+//==================================================
+// FVG LIMITS
+//==================================================
+groupLimits = "FVG Limits"
+maxNormalFvgs = input.int(15, "Max Normal FVGs to Keep", minval=1, maxval=50, group=groupLimits)
+maxIfvgs      = input.int(10, "Max Inversed FVGs to Keep", minval=1, maxval=30, group=groupLimits)
+
+//==================================================
+// DRAW / STYLE SETTINGS
+//==================================================
+groupDraw = "Draw Settings"
+extendBars  = input.int(100, "Extend FVG boxes (chart bars)", minval=10, maxval=500, group=groupDraw)
+
+txt5        = input.string("5m FVG",  "5m Label Text", group=groupDraw)
+txtInv      = input.string("IFVG", "Inversed Label Text", group=groupDraw)
+labelBgCol  = input.color(color.new(color.white, 100), "Label Background Color", group=groupDraw)
+
+groupColors = "Colors"
+bullUnfilledBox   = input.color(color.new(color.lime, 70),  "Bull Unfilled - Box", group=groupColors)
+bullUnfilledBord  = input.color(color.lime,                "Bull Unfilled - Border", group=groupColors)
+bullUnfilledText  = input.color(color.black,               "Bull Unfilled - Text", group=groupColors)
+
+bullFilledBox     = input.color(color.new(color.green, 15), "Bull Filled - Box", group=groupColors)
+bullFilledBord    = input.color(color.green,               "Bull Filled - Border", group=groupColors)
+bullFilledText    = input.color(color.white,               "Bull Filled - Text", group=groupColors)
+
+bearUnfilledBox   = input.color(color.new(color.red, 70),   "Bear Unfilled - Box", group=groupColors)
+bearUnfilledBord  = input.color(color.red,                 "Bear Unfilled - Border", group=groupColors)
+bearUnfilledText  = input.color(color.black,               "Bear Unfilled - Text", group=groupColors)
+
+bearFilledBox     = input.color(color.new(color.maroon, 10),"Bear Filled - Box", group=groupColors)
+bearFilledBord    = input.color(color.maroon,              "Bear Filled - Border", group=groupColors)
+bearFilledText    = input.color(color.white,               "Bear Filled - Text", group=groupColors)
+
+invBox            = input.color(color.new(color.orange, 70),  "Inversed - Box", group=groupColors)
+invBord           = input.color(color.orange,                "Inversed - Border", group=groupColors)
+invText           = input.color(color.white,               "Inversed - Text", group=groupColors)
+
+//==================================================
+// VWAP SETTINGS
+//==================================================
+groupVwap = "VWAP"
+vwapCol     = input.color(color.yellow, "Session VWAP Color", group=groupVwap)
+vwapWidth   = input.int(1, "Session VWAP Width", minval=1, maxval=4, group=groupVwap)
+keepVwapSessions = input.int(20, "How many VWAP sessions to keep drawn", minval=1, maxval=200, group=groupVwap)
+vwapTapSlippage = input.float(3.0, "VWAP Tap Slippage (points)", minval=0, maxval=10, step=0.25, group=groupVwap, tooltip="Price can be within this many points of VWAP to count as a 'tap'")
+
+//==================================================
+// IFVG ENTRY SETTINGS
+//==================================================
+groupEntry = "IFVG Entry"
+fvgMaxDistFromVwap = input.float(10.0, "Max FVG Distance from VWAP (points)", minval=1, maxval=50, step=0.5, group=groupEntry, tooltip="The closest part of the FVG must be within this distance from VWAP")
+ifvgMaxDistFromVwap = input.float(25.0, "Max IFVG Close Distance from VWAP (points)", minval=5, maxval=50, step=1, group=groupEntry, tooltip="Close of the candle that inverses the FVG must be within this distance from VWAP")
+maxCandlesForEntry = input.int(4, "Max Candles from VWAP Tap to IFVG", minval=1, maxval=10, group=groupEntry, tooltip="Maximum number of candles from VWAP tap to IFVG completion")
+vwapBreakMaxDist = input.float(15.0, "Max Distance After VWAP Break (points)", minval=1, maxval=30, step=0.5, group=groupEntry, tooltip="For VWAP break entries, close must be within this distance from VWAP")
+
+//==================================================
+// TRADE SETTINGS (SIMPLIFIED - FLAT 5 CONTRACTS)
+//==================================================
+groupRisk = "Trade Settings"
+fixedContracts = input.int(5, "Fixed Contracts per Trade", minval=1, maxval=50, group=groupRisk)
+rewardRatio = input.float(1.0, "Reward:Risk Ratio", minval=0.5, maxval=5, step=0.1, group=groupRisk)
+
+//==================================================
+// VOLD REGIME SETTINGS
+//==================================================
+groupVold = "VOLD Regime"
+useVoldRegime   = input.bool(false, "Use VOLD Regime Filter", group=groupVold, tooltip="When disabled, trades are taken without VOLD confirmation")
+voldSymbol      = input.string("USI:VOLD", "VOLD Symbol", group=groupVold)
+voldLookback    = input.int(3, "VOLD Trend Lookback Candles", minval=2, maxval=10, group=groupVold)
+voldConsLookback = input.int(8, "VOLD Consolidation Lookback", minval=4, maxval=20, group=groupVold)
+voldConsThresh  = input.float(0.3, "VOLD Consolidation Range %", minval=0.1, maxval=2.0, step=0.1, group=groupVold)
+voldMinConsLen  = input.int(4, "VOLD Min Consolidation Length", minval=3, maxval=15, group=groupVold)
+
+//==================================================
+// TIME HELPERS
+//==================================================
+chartTfMin = timeframe.in_seconds(timeframe.period) / 60.0
+chartTfMs  = timeframe.in_seconds(timeframe.period) * 1000
+rightMs    = extendBars * chartTfMs
+sessionLenMin = 390
+
+inSess  = not na(time(timeframe.period, sessionRTH))
+newSess = inSess and not inSess[1]
+
+var int barsFromOpen = 0
+barsFromOpen := newSess ? 1 : inSess ? (barsFromOpen + 1) : 0
+minsFromOpen = inSess ? (barsFromOpen - 1) * chartTfMin : na
+entryWindow = inSess and minsFromOpen >= entryStartMin and minsFromOpen <= (sessionLenMin - entryStopMin)
+
+//==================================================
+// 5m SERIES (direct request)
+//==================================================
+[o5, h5, l5, c5, t5] = request.security(syminfo.tickerid, "5", [open, high, low, close, time], barmerge.gaps_off, barmerge.lookahead_off)
+
+//==================================================
+// 5m FVG DETECTION (ICT 3-candle)
+//==================================================
+bull5  = l5  > h5[2]
+bear5  = h5  < l5[2]
+
+//==================================================
+// VOLD REGIME FUNCTIONS
+//==================================================
+f_candleDir(_o, _h, _l, _c) =>
+    _bodySize = _c - _o
+    _wickSize = _h - _l
+    _wickSize == 0 ? 0.0 : _bodySize / _wickSize * 100
+
+f_voldRegime(voldO, voldH, voldL, voldC, voldT, _lookback, _consLookback, _consThresh, _minConsLen) =>
+    int _dayChange = ta.change(time("D"))
+    bool _isNewSession = na(voldT[1]) or _dayChange != 0
+    var int _barsInSession = 0
+    if _isNewSession
+        _barsInSession := 0
+    else
+        _barsInSession += 1
+
+    float _netBias = 0.0
+    int _bullCount = 0
+    int _bearCount = 0
+    int _validBars = math.min(_lookback, _barsInSession)
+
+    if _validBars > 0
+        float _sumScores = 0.0
+        for i = 0 to _validBars - 1
+            _score = f_candleDir(voldO[i], voldH[i], voldL[i], voldC[i])
+            _sumScores += _score
+            if _score > 5
+                _bullCount += 1
+            else if _score < -5
+                _bearCount += 1
+        _netBias := _sumScores / _validBars
+
+    var int _consCount = 0
+    var bool _inConsol = false
+
+    if _isNewSession
+        _consCount := 0
+        _inConsol := false
+
+    if _barsInSession >= _consLookback
+        _rangeHigh = ta.highest(voldH, _consLookback)
+        _rangeLow = ta.lowest(voldL, _consLookback)
+        _rangeSize = _rangeHigh - _rangeLow
+        _midPoint = (_rangeHigh + _rangeLow) / 2
+        _rangePct = math.abs(_midPoint) > 0 ? (_rangeSize / math.abs(_midPoint)) * 100 : 0.0
+
+        if _rangePct < _consThresh
+            _consCount += 1
+            if _consCount >= _minConsLen
+                _inConsol := true
+        else
+            if _inConsol
+                _consCount := 0
+                _inConsol := false
+            else
+                _consCount := 0
+    else
+        _consCount := 0
+        _inConsol := false
+
+    var int _trendDir = 0
+    if _isNewSession
+        _trendDir := 0
+
+    if not _inConsol and _barsInSession >= _lookback
+        if _bullCount >= _lookback * 0.6
+            _trendDir := 1
+        else if _bearCount >= _lookback * 0.6
+            _trendDir := -1
+        else if _netBias > 15
+            _trendDir := 1
+        else if _netBias < -15
+            _trendDir := -1
+        else
+            _recentScore = f_candleDir(voldO, voldH, voldL, voldC)
+            _prevScore = f_candleDir(voldO[1], voldH[1], voldL[1], voldC[1])
+            _recentBias = (_recentScore * 2 + _prevScore) / 3
+            if _recentBias > 10
+                _trendDir := 1
+            else if _recentBias < -10
+                _trendDir := -1
+            else
+                _trendDir := 0
+    else if _inConsol
+        _trendDir := 0
+
+    _trendDir
+
+//==================================================
+// VOLD DATA REQUEST & REGIME CALCULATION
+//==================================================
+[voldO5, voldH5, voldL5, voldC5, voldT5] = request.security(voldSymbol, "5", [open, high, low, close, time], barmerge.gaps_off, barmerge.lookahead_off)
+
+int voldRegime = f_voldRegime(voldO5, voldH5, voldL5, voldC5, voldT5, voldLookback, voldConsLookback, voldConsThresh, voldMinConsLen)
+
+// When useVoldRegime is false, allow all trades regardless of VOLD direction
+bool voldBullish = useVoldRegime ? (voldRegime == 1) : true
+bool voldBearish = useVoldRegime ? (voldRegime == -1) : true
+
+//==================================================
+// STORAGE ARRAYS FOR FVGs
+//==================================================
+var box[]   boxes   = array.new_box()
+var label[] labels  = array.new_label()
+var bool[]  isBull  = array.new_bool()
+var float[] topArr  = array.new_float()
+var float[] botArr  = array.new_float()
+var int[]   leftT   = array.new_int()
+var int[]   state   = array.new_int()      // 0=unfilled, 1=filled, 2=inversed
+var int[]   lastTFt = array.new_int()
+var int[]   invTime = array.new_int()      // 5min candle time when FVG was inversed
+var float[] invCandleWickHigh = array.new_float()  // high of candle that inversed
+var float[] invCandleWickLow = array.new_float()   // low of candle that inversed
+var bool[]  entryUsed = array.new_bool()   // whether this IFVG has been used for an entry attempt
+
+//==================================================
+// VWAP TAP TRACKING
+//==================================================
+var int vwapTapTime = na            // 5min candle time of last VWAP tap
+var float vwapTapWickHigh = na      // high of candle that tapped VWAP
+var float vwapTapWickLow = na       // low of candle that tapped VWAP
+var int priceAboveVwapBeforeTap = 0 // 0=unknown, 1=above, -1=below
+var int vwapTapCandleCount = 0      // count of 5min candles since tap
+
+//==================================================
+// HELPERS
+//==================================================
+f_hideBoxLabel(_bx, _lb) =>
+    box.set_bgcolor(_bx, color.new(color.white, 100))
+    box.set_border_color(_bx, color.new(color.white, 100))
+    label.set_text(_lb, "")
+    label.set_textcolor(_lb, color.new(color.white, 100))
+    label.set_color(_lb, color.new(color.white, 100))
+
+f_shouldShow(_bull, _st) =>
+    if not showFvgBoxes
+        false
+    else if _st == 2
+        showInversed
+    else if _st == 0
+        showUnfilled
+    else
+        showFilled
+
+f_applyStyle(_bx, _lb, _bull, _st) =>
+    if not f_shouldShow(_bull, _st)
+        f_hideBoxLabel(_bx, _lb)
+    else
+        if _st == 2
+            box.set_bgcolor(_bx, invBox)
+            box.set_border_color(_bx, invBord)
+            label.set_text(_lb, txtInv)
+            label.set_textcolor(_lb, invText)
+            label.set_color(_lb, labelBgCol)
+        else if _bull
+            if _st == 0
+                box.set_bgcolor(_bx, bullUnfilledBox)
+                box.set_border_color(_bx, bullUnfilledBord)
+                label.set_text(_lb, txt5)
+                label.set_textcolor(_lb, bullUnfilledText)
+                label.set_color(_lb, labelBgCol)
+            else
+                box.set_bgcolor(_bx, bullFilledBox)
+                box.set_border_color(_bx, bullFilledBord)
+                label.set_text(_lb, txt5)
+                label.set_textcolor(_lb, bullFilledText)
+                label.set_color(_lb, labelBgCol)
+        else
+            if _st == 0
+                box.set_bgcolor(_bx, bearUnfilledBox)
+                box.set_border_color(_bx, bearUnfilledBord)
+                label.set_text(_lb, txt5)
+                label.set_textcolor(_lb, bearUnfilledText)
+                label.set_color(_lb, labelBgCol)
+            else
+                box.set_bgcolor(_bx, bearFilledBox)
+                box.set_border_color(_bx, bearFilledBord)
+                label.set_text(_lb, txt5)
+                label.set_textcolor(_lb, bearFilledText)
+                label.set_color(_lb, labelBgCol)
+
+f_deleteAt(_i) =>
+    box.delete(array.remove(boxes, _i))
+    label.delete(array.remove(labels, _i))
+    array.remove(isBull, _i)
+    array.remove(topArr, _i)
+    array.remove(botArr, _i)
+    array.remove(leftT, _i)
+    array.remove(state, _i)
+    array.remove(lastTFt, _i)
+    array.remove(invTime, _i)
+    array.remove(invCandleWickHigh, _i)
+    array.remove(invCandleWickLow, _i)
+    array.remove(entryUsed, _i)
+
+f_overlaps(_top1, _bot1, _top2, _bot2) =>
+    _top1 >= _bot2 and _top2 >= _bot1
+
+f_enforceCapInversed() =>
+    int cnt = 0
+    int sz = array.size(boxes)
+    if sz > 0
+        for j = sz - 1 to 0
+            if array.get(state, j) == 2
+                cnt += 1
+                if cnt > maxIfvgs
+                    f_deleteAt(j)
+
+f_enforceCapNormal() =>
+    int cnt = 0
+    int sz = array.size(boxes)
+    if sz > 0
+        for j = sz - 1 to 0
+            if array.get(state, j) != 2
+                cnt += 1
+                if cnt > maxNormalFvgs
+                    f_deleteAt(j)
+
+f_removeOverlappingIfvg(_top, _bot) =>
+    int sz = array.size(boxes)
+    if sz > 0
+        int newestIfvgIdx = -1
+        for j = sz - 1 to 0
+            if array.get(state, j) == 2
+                newestIfvgIdx := j
+                break
+        for j = sz - 1 to 0
+            if array.get(state, j) == 2 and j != newestIfvgIdx
+                if f_overlaps(array.get(topArr, j), array.get(botArr, j), _top, _bot)
+                    f_deleteAt(j)
+
+f_addFvg(_bull, _top, _bot, _leftTime) =>
+    if showFvgBoxes
+        int rT = _leftTime + rightMs
+        float midP = (_top + _bot) / 2.0
+        int midT = _leftTime + int((rT - _leftTime) / 2)
+
+        box bx = box.new(left=_leftTime, right=rT, top=_top, bottom=_bot, xloc=xloc.bar_time, bgcolor=invBox, border_color=invBord)
+        label lb = label.new(x=midT, y=midP, xloc=xloc.bar_time, yloc=yloc.price, text=txt5,
+            style=label.style_label_center, color=labelBgCol, textcolor=invText, size=size.small)
+
+        array.push(boxes, bx)
+        array.push(labels, lb)
+        array.push(isBull, _bull)
+        array.push(topArr, _top)
+        array.push(botArr, _bot)
+        array.push(leftT, _leftTime)
+        array.push(state, 0)
+        array.push(lastTFt, na)
+        array.push(invTime, na)
+        array.push(invCandleWickHigh, na)
+        array.push(invCandleWickLow, na)
+        array.push(entryUsed, false)
+
+        f_removeOverlappingIfvg(_top, _bot)
+        f_enforceCapNormal()
+
+//==================================================
+// SESSION VWAP
+//==================================================
+var float cumPV = na
+var float cumV  = na
+var float prevVWAP = na
+var line[] vwapLines = array.new_line()
+
+if newSess
+    cumPV := 0.0
+    cumV  := 0.0
+    prevVWAP := na
+    vwapTapTime := na
+    vwapTapWickHigh := na
+    vwapTapWickLow := na
+    priceAboveVwapBeforeTap := 0
+    vwapTapCandleCount := 0
+
+float sessVWAP = na
+if inSess
+    tp = (high + low + close) / 3.0
+    cumPV += tp * volume
+    cumV  += volume
+    sessVWAP := cumV != 0 ? (cumPV / cumV) : na
+
+    if not na(sessVWAP)
+        if not na(prevVWAP)
+            line ln = line.new(bar_index - 1, prevVWAP, bar_index, sessVWAP,
+                xloc=xloc.bar_index, extend=extend.none, color=vwapCol, width=vwapWidth)
+            array.push(vwapLines, ln)
+        prevVWAP := sessVWAP
+
+maxLines = int(math.ceil((sessionLenMin / chartTfMin) * keepVwapSessions))
+while array.size(vwapLines) > maxLines
+    line.delete(array.shift(vwapLines))
+
+//==================================================
+// 5m FVG CREATION
+//==================================================
+if (bull5 or bear5) and showFvgBoxes
+    float top5n = bull5 ? l5 : l5[2]
+    float bot5n = bull5 ? h5[2] : h5
+    f_addFvg(bull5, top5n, bot5n, t5[2])
+
+//==================================================
+// STATE UPDATES + IFVG ENTRY DETECTION
+//==================================================
+bool longEntry = false
+bool shortEntry = false
+var float entryStopLevel = na
+var float entryTargetLevel = na
+
+// Reset stop/target when position closes
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    entryStopLevel := na
+    entryTargetLevel := na
+
+var bool needIfvgCap = false
+needIfvgCap := false
+
+// Track VWAP tap using 5min candle time (works on any chart timeframe)
+var int lastTapCheckTime = na
+bool new5mCandle = t5 != lastTapCheckTime
+lastTapCheckTime := t5
+
+if inSess and not na(sessVWAP) and new5mCandle
+    bool tappedVwap = (l5 <= sessVWAP + vwapTapSlippage) and (h5 >= sessVWAP - vwapTapSlippage)
+    if tappedVwap and na(vwapTapTime)
+        vwapTapTime := t5
+        vwapTapWickHigh := h5
+        vwapTapWickLow := l5
+        priceAboveVwapBeforeTap := c5[1] > sessVWAP ? 1 : -1
+        vwapTapCandleCount := 0
+    else if not na(vwapTapTime)
+        vwapTapCandleCount += 1
+    if not na(vwapTapTime) and vwapTapCandleCount > maxCandlesForEntry
+        vwapTapTime := na
+        vwapTapWickHigh := na
+        vwapTapWickLow := na
+        priceAboveVwapBeforeTap := 0
+        vwapTapCandleCount := 0
+
+// Process FVGs for state updates and entry signals
+int n = array.size(boxes)
+if n > 0
+    for i = 0 to n - 1
+        box  bx = array.get(boxes, i)
+        label lb = array.get(labels, i)
+
+        bool bull = array.get(isBull, i)
+        float fvgTop = array.get(topArr, i)
+        float fvgBot = array.get(botArr, i)
+        int lt = array.get(leftT, i)
+        int st = array.get(state, i)
+        int lastT = array.get(lastTFt, i)
+
+        int   curT = t5
+        float curH = h5
+        float curL = l5
+        float curC = c5
+        float curO = o5
+
+        bool newTFCandle = curT != lastT
+
+        if newTFCandle and curT > lt
+            // Check if price entered the FVG zone
+            enteredNow = (curL <= fvgTop) and (curH >= fvgBot)
+            if st == 0 and enteredNow
+                st := 1
+
+            // Check for inversion
+            bool justInversed = false
+            if st == 1
+                if (bull and curC < fvgBot) or ((not bull) and curC > fvgTop)
+                    st := 2
+                    needIfvgCap := true
+                    justInversed := true
+                    array.set(invTime, i, curT)
+                    array.set(invCandleWickHigh, i, curH)
+                    array.set(invCandleWickLow, i, curL)
+
+            // ======================================================
+            // IFVG ENTRY LOGIC - SIMPLIFIED WITH FLAT 5 CONTRACTS
+            // ======================================================
+            bool alreadyUsed = array.get(entryUsed, i)
+            if st == 2 and entryWindow and strategy.position_size == 0 and not alreadyUsed
+                int fvgInvTime = array.get(invTime, i)
+                float invWickH = array.get(invCandleWickHigh, i)
+                float invWickL = array.get(invCandleWickLow, i)
+
+                bool isInversionCandle = justInversed
+                bool isNextCandle = not na(fvgInvTime) and (curT > fvgInvTime) and (curT - fvgInvTime <= 5 * 60 * 1000)
+                bool recentIfvg = isInversionCandle or isNextCandle
+
+                if not na(sessVWAP) and recentIfvg
+                    float distToTop = math.abs(fvgTop - sessVWAP)
+                    float distToBot = math.abs(fvgBot - sessVWAP)
+                    float fvgDistFromVwap = math.min(distToTop, distToBot)
+                    bool fvgNearVwap = fvgDistFromVwap <= fvgMaxDistFromVwap
+                    float closeDistFromVwap = math.abs(curC - sessVWAP)
+
+                    // ----------------------------------------
+                    // ENTRY TYPE 1: VWAP Tap + IFVG
+                    // ----------------------------------------
+                    if not na(vwapTapTime) and fvgNearVwap
+                        bool withinTapWindow = vwapTapCandleCount <= maxCandlesForEntry
+                        bool ifvgCloseNearVwap = closeDistFromVwap <= ifvgMaxDistFromVwap
+
+                        if withinTapWindow and ifvgCloseNearVwap and justInversed
+                            // Long setup
+                            if (not bull) and priceAboveVwapBeforeTap == 1 and curC > fvgTop and voldBullish
+                                float stopLevel = vwapTapWickLow
+                                float stopDist = curC - stopLevel
+                                if stopDist > 0
+                                    longEntry := true
+                                    entryStopLevel := stopLevel
+                                    entryTargetLevel := curC + (stopDist * rewardRatio)
+                                    array.set(entryUsed, i, true)
+                                    vwapTapTime := na
+                                    vwapTapWickHigh := na
+                                    vwapTapWickLow := na
+                                    priceAboveVwapBeforeTap := 0
+                                    vwapTapCandleCount := 0
+
+                            // Short setup
+                            if bull and priceAboveVwapBeforeTap == -1 and curC < fvgBot and voldBearish
+                                float stopLevel = vwapTapWickHigh
+                                float stopDist = stopLevel - curC
+                                if stopDist > 0
+                                    shortEntry := true
+                                    entryStopLevel := stopLevel
+                                    entryTargetLevel := curC - (stopDist * rewardRatio)
+                                    array.set(entryUsed, i, true)
+                                    vwapTapTime := na
+                                    vwapTapWickHigh := na
+                                    vwapTapWickLow := na
+                                    priceAboveVwapBeforeTap := 0
+                                    vwapTapCandleCount := 0
+
+                    // ----------------------------------------
+                    // ENTRY TYPE 2: IFVG + VWAP Break
+                    // ----------------------------------------
+                    if fvgNearVwap and closeDistFromVwap <= vwapBreakMaxDist and recentIfvg
+                        // Long
+                        if (not bull) and st == 2 and curC > sessVWAP and voldBullish
+                            bool vwapBreakUp = (curO <= sessVWAP + vwapTapSlippage) or (curL <= sessVWAP + vwapTapSlippage)
+                            if vwapBreakUp
+                                float stopLevel = invWickL
+                                float stopDist = curC - stopLevel
+                                if stopDist > 0
+                                    longEntry := true
+                                    entryStopLevel := stopLevel
+                                    entryTargetLevel := curC + (stopDist * rewardRatio)
+                                    array.set(entryUsed, i, true)
+
+                        // Short
+                        if bull and st == 2 and curC < sessVWAP and voldBearish
+                            bool vwapBreakDown = (curO >= sessVWAP - vwapTapSlippage) or (curH >= sessVWAP - vwapTapSlippage)
+                            if vwapBreakDown
+                                float stopLevel = invWickH
+                                float stopDist = stopLevel - curC
+                                if stopDist > 0
+                                    shortEntry := true
+                                    entryStopLevel := stopLevel
+                                    entryTargetLevel := curC - (stopDist * rewardRatio)
+                                    array.set(entryUsed, i, true)
+
+            array.set(state, i, st)
+            array.set(lastTFt, i, curT)
+
+        f_applyStyle(bx, lb, bull, st)
+
+// Deferred IFVG cap enforcement
+if needIfvgCap
+    f_enforceCapInversed()
+
+//==================================================
+// STRATEGY EXECUTION - FLAT 5 CONTRACTS
+//==================================================
+if longEntry
+    strategy.entry("Long", strategy.long, qty=fixedContracts)
+    strategy.exit("Long Exit", "Long", stop=entryStopLevel, limit=entryTargetLevel)
+
+if shortEntry
+    strategy.entry("Short", strategy.short, qty=fixedContracts)
+    strategy.exit("Short Exit", "Short", stop=entryStopLevel, limit=entryTargetLevel)
+
+//==================================================
+// ENTRY MARKERS
+//==================================================
+plotshape(longEntry, title="Long Entry", style=shape.triangleup, location=location.belowbar, size=size.small, color=color.green)
+plotshape(shortEntry, title="Short Entry", style=shape.triangledown, location=location.abovebar, size=size.small, color=color.red)
+
+plot(strategy.position_size > 0 ? entryStopLevel : na, title="Long Stop", color=color.red, style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size > 0 ? entryTargetLevel : na, title="Long Target", color=color.green, style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size < 0 ? entryStopLevel : na, title="Short Stop", color=color.red, style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size < 0 ? entryTargetLevel : na, title="Short Target", color=color.green, style=plot.style_linebr, linewidth=2)
+
+//==================================================
+// VOLD REGIME BACKGROUND
+//==================================================
+bgcolor(voldBullish ? color.new(color.green, 95) : voldBearish ? color.new(color.red, 95) : color.new(color.gray, 98), title="VOLD Regime BG")
+
+//==================================================
+// INFO TABLE
+//==================================================
+var int fvgUnfilled = 0
+var int fvgFilled = 0
+var int fvgInversed = 0
+fvgUnfilled := 0
+fvgFilled := 0
+fvgInversed := 0
+if array.size(state) > 0
+    for j = 0 to array.size(state) - 1
+        int s = array.get(state, j)
+        if s == 0
+            fvgUnfilled += 1
+        else if s == 1
+            fvgFilled += 1
+        else
+            fvgInversed += 1
+
+var table infoTable = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    table.cell(infoTable, 0, 0, "IFVG 5-Flat", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 0, useVoldRegime ? "VOLD ON" : "VOLD OFF", text_color=useVoldRegime ? color.green : color.orange, text_size=size.small)
+
+    table.cell(infoTable, 0, 1, "VOLD Regime:", text_color=color.white, text_size=size.small)
+    voldText = voldRegime == 1 ? "BULLISH" : voldRegime == -1 ? "BEARISH" : "NEUTRAL"
+    voldColor = voldRegime == 1 ? color.green : voldRegime == -1 ? color.red : color.gray
+    table.cell(infoTable, 1, 1, voldText, text_color=voldColor, text_size=size.small)
+
+    table.cell(infoTable, 0, 2, "VWAP:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 2, str.tostring(sessVWAP, "#.##"), text_color=color.yellow, text_size=size.small)
+
+    table.cell(infoTable, 0, 3, "Position:", text_color=color.white, text_size=size.small)
+    posText = strategy.position_size > 0 ? "LONG " + str.tostring(strategy.position_size) : strategy.position_size < 0 ? "SHORT " + str.tostring(math.abs(strategy.position_size)) : "FLAT"
+    posColor = strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray
+    table.cell(infoTable, 1, 3, posText, text_color=posColor, text_size=size.small)
+
+    table.cell(infoTable, 0, 4, "Entry Window:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 4, entryWindow ? "OPEN" : "CLOSED", text_color=entryWindow ? color.green : color.red, text_size=size.small)
+
+    table.cell(infoTable, 0, 5, "VWAP Tap:", text_color=color.white, text_size=size.small)
+    tapText = not na(vwapTapTime) ? "ACTIVE (" + str.tostring(vwapTapCandleCount) + " candles)" : "NONE"
+    table.cell(infoTable, 1, 5, tapText, text_color=not na(vwapTapTime) ? color.yellow : color.gray, text_size=size.small)
+
+    table.cell(infoTable, 0, 6, "FVGs (U/F/I):", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 6, str.tostring(fvgUnfilled) + "/" + str.tostring(fvgFilled) + "/" + str.tostring(fvgInversed), text_color=color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 7, "5m Close:", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 7, str.tostring(c5, "#.##"), text_color=color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 8, "Tap Direction:", text_color=color.white, text_size=size.small)
+    tapDirText = priceAboveVwapBeforeTap == 1 ? "FROM ABOVE" : priceAboveVwapBeforeTap == -1 ? "FROM BELOW" : "N/A"
+    tapDirColor = priceAboveVwapBeforeTap == 1 ? color.green : priceAboveVwapBeforeTap == -1 ? color.red : color.gray
+    table.cell(infoTable, 1, 8, tapDirText, text_color=tapDirColor, text_size=size.small)
+
+//==================================================
+// ALERTS
+//==================================================
+alertcondition(longEntry, title="IFVG Long Entry", message="IFVG Long Entry Signal")
+alertcondition(shortEntry, title="IFVG Short Entry", message="IFVG Short Entry Signal")
