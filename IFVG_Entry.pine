@@ -510,20 +510,18 @@ if n > 0
         bool newTFCandle = curT != lastT
 
         if newTFCandle and curT > lt
-            // Check if price entered the FVG zone
+            // Check if price entered the FVG zone (same logic as VOLDRegime)
             enteredNow = (curL <= fvgTop) and (curH >= fvgBot)
             if st == 0 and enteredNow
                 st := 1
 
-            // Check for inversion
-            bool justInversed = false
+            // Check for inversion (same logic as VOLDRegime)
+            // Bull FVG inversed when close below bottom
+            // Bear FVG inversed when close above top
             if st == 1
-                // Bull FVG inversed when close below bottom
-                // Bear FVG inversed when close above top
                 if (bull and curC < fvgBot) or ((not bull) and curC > fvgTop)
                     st := 2
                     needIfvgCap := true
-                    justInversed := true
                     array.set(invTime, i, curT)
                     array.set(invCandleWickHigh, i, curH)
                     array.set(invCandleWickLow, i, curL)
@@ -532,6 +530,8 @@ if n > 0
             // IFVG ENTRY LOGIC
             // ======================================================
             bool alreadyUsed = array.get(entryUsed, i)
+            bool justInversed = (st == 2) and (array.get(invTime, i) == curT)
+
             if st == 2 and entryWindow and strategy.position_size == 0 and not alreadyUsed
                 int fvgInvTime = array.get(invTime, i)
                 float invWickH = array.get(invCandleWickHigh, i)
@@ -643,10 +643,12 @@ if n > 0
                                         entryContracts := qty
                                         array.set(entryUsed, i, true)
 
+            // Save state updates (inside the newTFCandle block like VOLDRegime)
             array.set(state, i, st)
             array.set(lastTFt, i, curT)
 
-        f_applyStyle(bx, lb, bull, st)
+            // Apply visual style (inside the newTFCandle block like VOLDRegime)
+            f_applyStyle(bx, lb, bull, st)
 
 // Deferred IFVG cap enforcement
 if needIfvgCap
