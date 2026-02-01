@@ -361,33 +361,30 @@ f_removeOverlappingIfvg(_top, _bot) =>
                     f_deleteAt(j)
 
 f_addFvg(_bull, _top, _bot, _leftTime) =>
-    if not show5mTF
-        return
+    if show5mTF
+        int rT = _leftTime + rightMs
+        float midP = (_top + _bot) / 2.0
+        int midT = _leftTime + int((rT - _leftTime) / 2)
 
-    int rT = _leftTime + rightMs
-    float midP = (_top + _bot) / 2.0
-    int midT = _leftTime + int((rT - _leftTime) / 2)
+        box bx = box.new(left=_leftTime, right=rT, top=_top, bottom=_bot, xloc=xloc.bar_time, bgcolor=bullUnfilledBox, border_color=bullUnfilledBord)
+        label lb = label.new(x=midT, y=midP, xloc=xloc.bar_time, yloc=yloc.price, text=txt5,
+            style=label.style_label_center, color=labelBgCol, textcolor=bullUnfilledText, size=size.small)
 
-    box bx = box.new(left=_leftTime, right=rT, top=_top, bottom=_bot, xloc=xloc.bar_time, bgcolor=bullUnfilledBox, border_color=bullUnfilledBord)
-    label lb = label.new(x=midT, y=midP, xloc=xloc.bar_time, yloc=yloc.price, text=txt5,
-        style=label.style_label_center, color=labelBgCol, textcolor=bullUnfilledText, size=size.small)
+        array.push(boxes, bx)
+        array.push(labels, lb)
+        array.push(isBull, _bull)
+        array.push(topArr, _top)
+        array.push(botArr, _bot)
+        array.push(leftT, _leftTime)
+        array.push(state, 0)
+        array.push(lastTFt, na)
+        array.push(invTime, na)
+        array.push(invCandleWickHigh, na)
+        array.push(invCandleWickLow, na)
+        array.push(entryUsed, false)
 
-    array.push(boxes, bx)
-    array.push(labels, lb)
-    array.push(isBull, _bull)
-    array.push(topArr, _top)
-    array.push(botArr, _bot)
-    array.push(leftT, _leftTime)
-    array.push(state, 0)
-    array.push(lastTFt, na)
-    array.push(invTime, na)
-    array.push(invCandleWickHigh, na)
-    array.push(invCandleWickLow, na)
-    array.push(entryUsed, false)
-
-    f_removeOverlappingIfvg(_top, _bot)
-    f_enforceCapNormal()
-    return
+        f_removeOverlappingIfvg(_top, _bot)
+        f_enforceCapNormal()
 
 //==================================================
 // SESSION VWAP (from Dimas_RFVG)
